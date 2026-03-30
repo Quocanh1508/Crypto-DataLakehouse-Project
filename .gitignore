@@ -1,0 +1,38 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Project configuration
+.vscode/
+.idea/
+
+# Data and logs
+*.csv
+*.json
+*.parquet
+*.log
+
+# Docker relative storage
+minio_data/
+postgres_data/
+
+# Spark / Big Data
+_delta_log/
+/checkpoints/
+spark-warehouse/
+target/
+*.jar
+
+# OS generated files
+.DS_Store
+Thumbs.db
