@@ -71,7 +71,7 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      /usr/bin/mc config host add myminio http://minio:9000 admin admin123;
+      /usr/bin/mc alias set myminio http://minio:9000 admin admin123;
       /usr/bin/mc mb --ignore-existing myminio/bronze;
       /usr/bin/mc mb --ignore-existing myminio/silver;
       /usr/bin/mc mb --ignore-existing myminio/gold;
@@ -142,13 +142,14 @@ services:
     networks:
       - lakehouse-net
 
-  # ── Processing Engine (Spark) ─────────────────────────────────────────────────
+  # ── Processing Engine (Spark 4.1.1 Custom) ────────────────────────────────────
   spark-master:
-    image: bitnami/spark:3.5
+    build:
+      context: ./spark
     container_name: spark-master
     mem_limit: 1g
     environment:
-      - SPARK_MODE=master
+      - SPARK_ROLE=master
       - SPARK_MASTER_OPTS=-Xms256m -Xmx512m
     ports:
       - "7077:7077"
@@ -157,13 +158,14 @@ services:
       - lakehouse-net
 
   spark-worker:
-    image: bitnami/spark:3.5
+    build:
+      context: ./spark
     container_name: spark-worker
     mem_limit: 2g
     depends_on:
       - spark-master
     environment:
-      - SPARK_MODE=worker
+      - SPARK_ROLE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
       - SPARK_WORKER_MEMORY=1500M
       - SPARK_WORKER_CORES=2
