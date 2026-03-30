@@ -4,6 +4,7 @@ tenacity==8.2.3
 requests==2.31.0
 boto3==1.34.0
 botocore==1.34.0
+rel
 
 # Spark / PySpark (install separately or use Docker image)
 # pyspark==3.5.0
