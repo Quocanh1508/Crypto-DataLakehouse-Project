@@ -52,10 +52,9 @@ def create_producer() -> KafkaProducer:
     )
 
 
-# ── Step 1: Fetch Top-50 symbols ───────────────────────────────────────────────
 def fetch_top_symbols(n: int = TOP_N) -> list[str]:
     """Call Binance REST /ticker/24hr, sort by quoteVolume, return top-N USDT pairs."""
-    log.info("Fetching 24hr tickers from Binance REST API ...")
+    log.info("Fetching 24hr tickers from Binance REST API")
     resp = requests.get(
         f"{BINANCE_REST_URL}/api/v3/ticker/24hr",
         timeout=15
