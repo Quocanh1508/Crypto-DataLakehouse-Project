@@ -18,6 +18,7 @@ from datetime import datetime
 
 import requests
 import websocket
+import rel
 from kafka import KafkaProducer
 from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log
 
@@ -133,8 +134,15 @@ def run_stream(producer: KafkaProducer, ws_url: str):
         on_close=on_close,
         on_open=on_open,
     )
-    # run_forever blocks; returns only on disconnect (triggers retry)
-    ws.run_forever(ping_interval=30, ping_timeout=10)
+    # run_forever non-blocking with rel dispatcher to send heartbeats
+    ws.run_forever(
+        dispatcher=rel,
+        ping_interval=60,
+        ping_timeout=10
+    )
+    rel.signal(2, rel.abort)  # Allow safe exit via KeyboardInterrupt
+    rel.dispatch()
+    
     raise ConnectionError("WebSocket disconnected unexpectedly — triggering retry.")
 
 
