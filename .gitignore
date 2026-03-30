@@ -36,3 +36,26 @@ target/
 # OS generated files
 .DS_Store
 Thumbs.db
+# Ignore Big Data & Zip files
+*.zip
+*.tar.gz
+*.jar
+
+# Ignore Lakehouse Data & Checkpoints
+spark/
+.agent/
+checkpoints/
+bronze/
+silver/
+gold/
+raw_batch/
+*.csv
+*.json
+*.parquet
+*.tgz
+*.zip
+spark/spark-4.1.1-bin-hadoop3.tgz
+
+# Ignore Python Virtual Env
+venv/
+__pycache__/
