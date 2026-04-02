@@ -4,38 +4,52 @@ bronze_to_silver.py
 Phase 3 — Bronze → Silver PySpark Batch Job
 
 Architecture:
-  - SOURCE  : Delta Lake  s3a://bronze/crypto_trades/
-  - TARGET  : Delta Lake  s3a://silver/crypto_trades/
-  - WRITE   : Overwrite (full daily reprocessing, idempotent)
-  - QUALITY : Great Expectations via Spark DataFrame validation
-  - DEDUP   : By Binance trade ID field `t` (unique per symbol)
+  - SOURCE     : Delta Lake  s3a://bronze/crypto_trades/
+  - TARGET     : Delta Lake  s3a://silver/crypto_trades/
+  - QUARANTINE : Delta Lake  s3a://silver/quarantine/
+  - WRITE      : Overwrite (full daily reprocessing, idempotent)
+  - QUALITY    : Inline Spark DQ rules (Great Expectations semantics)
+  - DEDUP      : By Binance trade ID field `t` (unique per symbol)
 
 Data Quality Rules (Bronze → Silver contract):
-  1. No null trade IDs (`t`)
-  2. Price (`p`) must be > 0
-  3. Quantity (`q`) must be > 0
-  4. Event type (`e`) must equal "trade"
-  5. No duplicate (symbol, trade_id) pairs
+  1. No null trade IDs (`t`) → quarantine
+  2. Price (`p`) must be > 0 → quarantine
+  3. Quantity (`q`) must be > 0 → quarantine
+  4. Event type (`e`) must equal "trade" → quarantine
+  5. No duplicate (symbol, trade_id) pairs → deduplicate, keep latest
+
+Precision:
+  - Price and quantity use DecimalType(38, 18) to avoid IEEE-754 float rounding.
+
+Partitioning:
+  - Silver table partitioned by (symbol, dt) where dt = DATE(event_time).
+  - Enables daily partition pruning for historical queries in Trino.
+
+Quarantine:
+  - Bad rows are NEVER dropped silently. They are written to s3a://silver/quarantine/
+    with an extra `quarantine_reason` column for audit and reprocessing.
+  - The job NEVER halts due to bad source data — only genuine infrastructure
+    failures (S3 unreachable, Spark OOM, etc.) will abort the run.
 
 Run locally:
   python processing/bronze_to_silver.py
 
 Run via Spark submit (inside container):
-  spark-submit --packages io.delta:delta-spark_2.13:3.3.0,...
+  spark-submit --packages io.delta:delta-spark_2.13:4.0.0,...
                processing/bronze_to_silver.py
 """
 
 import logging
 import os
-import sys
 from datetime import datetime, timezone
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
     StructType, StructField, StringType,
-    LongType, DoubleType, BooleanType, TimestampType
+    LongType, BooleanType, TimestampType, DecimalType
 )
+from pyspark.sql.window import Window
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -51,14 +65,13 @@ MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "admin123")
 
 BRONZE_PATH      = "s3a://bronze/crypto_trades"
 SILVER_PATH      = "s3a://silver/crypto_trades"
-CHECKPOINT_PATH  = "s3a://checkpoints/bronze_to_silver"
+QUARANTINE_PATH  = "s3a://silver/quarantine"
 
-# Delta Lake JAR packages for local run (Spark 4.1.1 + Delta 4.0)
-DELTA_PACKAGES   = (
-    "io.delta:delta-spark_2.13:4.0.0,"
-    "org.apache.hadoop:hadoop-aws:3.3.4,"
-    "com.amazonaws:aws-java-sdk-bundle:1.12.262"
-)
+# DecimalType(38, 18): 38 total digits, 18 after decimal point.
+# This matches the precision used in SQL financial systems and avoids
+# the IEEE-754 rounding issue that DoubleType introduces for pairs
+# like BTCUSDT where prices can be e.g. 69420.12345678
+PRICE_DECIMAL = DecimalType(38, 18)
 
 
 # ── SparkSession ──────────────────────────────────────────────────────────────
@@ -82,7 +95,7 @@ def create_spark() -> SparkSession:
         .config("spark.hadoop.fs.s3a.impl",
                 "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-        # ── Performance tuning for local single-machine run ─────────────
+        # ── Performance tuning for local single-machine run ────────────────
         .config("spark.driver.memory",   "2g")
         .config("spark.executor.memory", "2g")
         .config("spark.sql.shuffle.partitions", "4")  # small for local
@@ -93,119 +106,92 @@ def create_spark() -> SparkSession:
     return spark
 
 
-# ── Schema enforcement ────────────────────────────────────────────────────────
-BRONZE_SCHEMA = StructType([
-    StructField("e",            StringType(),  True),   # event type = "trade"
-    StructField("E",            LongType(),    True),   # event time (ms)
-    StructField("s",            StringType(),  True),   # symbol e.g. BTCUSDT
-    StructField("t",            LongType(),    True),   # trade ID (unique!)
-    StructField("p",            StringType(),  True),   # price (string from WS)
-    StructField("q",            StringType(),  True),   # quantity (string from WS)
-    StructField("T",            LongType(),    True),   # trade time (ms)
-    StructField("m",            BooleanType(), True),   # buyer is market maker
-    StructField("M",            BooleanType(), True),   # ignore
-    StructField("ingested_at",  StringType(),  True),   # added by producer
-])
-
-
-# ── Data Quality Checks (using plain Spark — lightweight GE substitute) ───────
-class DataQualityException(Exception):
-    """Raised if data does not meet quality thresholds."""
-
-
-def run_quality_checks(df: DataFrame, stage: str = "bronze_read") -> DataFrame:
+# ── Data Quality & Quarantine ─────────────────────────────────────────────────
+def split_valid_quarantine(df: DataFrame):
     """
-    Inline data quality validation using Spark column expressions.
-    Mirrors Great Expectations rule semantics:
-      - expect_column_values_to_not_be_null
-      - expect_column_values_to_be_between
-      - expect_column_values_to_be_in_set
+    Evaluate each DQ rule and tag bad rows with a quarantine_reason string.
+    Returns two DataFrames: (clean_df, quarantine_df).
 
-    Returns a cleaned DataFrame. Rows violating rules are quarantined
-    to a DQ_FAILED column for audit; hard failures abort the job.
+    Design principle:
+      - The job NEVER halts due to bad source data.
+      - Bad rows go to s3a://silver/quarantine/ for audit and reprocessing.
+      - Only hard infrastructure errors (S3 down, OOM) will abort.
     """
-    log.info("[DQ] Running quality checks after stage: %s", stage)
+    log.info("[DQ] Evaluating data quality rules…")
 
-    total = df.count()
-    log.info("[DQ] Total rows: %d", total)
-
-    # ── Rule 1: trade ID must not be null ─────────────────────────────────
-    null_trade_ids = df.filter(F.col("t").isNull()).count()
-    if null_trade_ids > 0:
-        raise DataQualityException(
-            f"[DQ FAIL] {null_trade_ids} rows have null trade_id (t). Aborting."
+    # Build a 'quarantine_reason' column combining all rule violations.
+    # An empty string means the row is clean.
+    df = df.withColumn(
+        "quarantine_reason",
+        F.concat_ws("; ",
+            F.when(F.col("trade_id").isNull(),          F.lit("null trade_id")),
+            F.when(F.col("e") != "trade",               F.lit("invalid event_type")),
+            F.when(F.col("price_decimal").isNull(),     F.lit("null price after cast")),
+            F.when(F.col("price_decimal") <= 0,         F.lit("price <= 0")),
+            F.when(F.col("quantity_decimal").isNull(),  F.lit("null quantity after cast")),
+            F.when(F.col("quantity_decimal") <= 0,      F.lit("quantity <= 0")),
         )
-    log.info("[DQ] ✅ Rule 1 passed — 0 null trade IDs")
+    )
 
-    # ── Rule 2: event type must be 'trade' ────────────────────────────────
-    wrong_event = df.filter(F.col("e") != "trade").count()
-    if wrong_event > 0:
-        log.warning("[DQ] ⚠️  %d rows have unexpected event type (e != 'trade')", wrong_event)
-        df = df.filter(F.col("e") == "trade")
-    log.info("[DQ] ✅ Rule 2 passed — filtered to event_type='trade'")
+    # cache so we don't recompute for both splits
+    df.cache()
 
-    # ── Rule 3: price > 0 ─────────────────────────────────────────────────
-    invalid_price = df.filter(F.col("price_double") <= 0).count()
-    if invalid_price > 0:
-        log.warning("[DQ] ⚠️  %d rows with price <= 0 — dropping", invalid_price)
-        df = df.filter(F.col("price_double") > 0)
-    log.info("[DQ] ✅ Rule 3 passed — price > 0")
+    clean_df      = df.filter(F.col("quarantine_reason") == "").drop("quarantine_reason")
+    quarantine_df = df.filter(F.col("quarantine_reason") != "")
 
-    # ── Rule 4: quantity > 0 ──────────────────────────────────────────────
-    invalid_qty = df.filter(F.col("quantity_double") <= 0).count()
-    if invalid_qty > 0:
-        log.warning("[DQ] ⚠️  %d rows with quantity <= 0 — dropping", invalid_qty)
-        df = df.filter(F.col("quantity_double") > 0)
-    log.info("[DQ] ✅ Rule 4 passed — quantity > 0")
+    total      = df.count()
+    n_clean    = clean_df.count()
+    n_bad      = quarantine_df.count()
 
-    clean_total = df.count()
-    log.info("[DQ] 🎯 %d / %d rows passed all DQ checks (%.1f%%)",
-             clean_total, total, 100 * clean_total / max(total, 1))
+    log.info("[DQ] Total: %d | Clean: %d | Quarantine: %d (%.1f%%)",
+             total, n_clean, n_bad, 100 * n_bad / max(total, 1))
 
-    return df
+    return clean_df, quarantine_df
 
 
 # ── Bronze Reader ─────────────────────────────────────────────────────────────
 def read_bronze(spark: SparkSession) -> DataFrame:
     """
-    Read the Bronze Delta table.
-    Bronze was written via Structured Streaming (Append mode) hence may contain
-    duplicates if the checkpoint was reset. We handle dedup in transform().
+    Read the Bronze Delta table (written as Append by bronze_streaming.py).
+    May contain duplicates if the streaming checkpoint was ever reset.
     """
     log.info("Reading Bronze Delta table from: %s", BRONZE_PATH)
-    try:
-        df = spark.read.format("delta").load(BRONZE_PATH)
-        log.info("Bronze schema: %s", df.schema.simpleString())
-        log.info("Bronze row count: %d", df.count())
-        return df
-    except Exception as exc:
-        log.error("Failed to read Bronze Delta table: %s", exc)
-        raise
+    df = spark.read.format("delta").load(BRONZE_PATH)
+    log.info("Bronze row count: %d", df.count())
+    return df
 
 
 # ── Type-casting & Enrichment ─────────────────────────────────────────────────
 def cast_and_enrich(df: DataFrame) -> DataFrame:
     """
-    Cast string fields from WebSocket JSON to proper numeric types.
-    Add derived columns used by the Gold layer later.
+    1. Cast price/quantity strings → DecimalType(38,18) — no float rounding.
+    2. Convert Binance epoch-ms fields → TimestampType.
+    3. Extract `dt` (DateType) from event_time for daily partition column.
+    4. Rename raw WS field names (single letters) to human-readable names.
     """
     log.info("Casting types and enriching columns…")
     return (
         df
-        # Cast string price / qty to double early (needed for DQ checks)
-        .withColumn("price_double",    F.col("p").cast("double"))
-        .withColumn("quantity_double", F.col("q").cast("double"))
-        # Convert Binance millisecond timestamps to Spark timestamp
+        # ── FIX 1: Decimal precision — no IEEE-754 rounding ───────────────
+        .withColumn("price_decimal",    F.col("p").cast(PRICE_DECIMAL))
+        .withColumn("quantity_decimal", F.col("q").cast(PRICE_DECIMAL))
+
+        # ── FIX 2: Timestamps + daily partition column ─────────────────────
         .withColumn("event_time",  (F.col("E") / 1000).cast(TimestampType()))
         .withColumn("trade_time",  (F.col("T") / 1000).cast(TimestampType()))
-        # Rename for Silver schema clarity
+        # dt = DATE derived from event_time (E), used for partition pruning
+        .withColumn("dt", F.to_date((F.col("E") / 1000).cast(TimestampType())))
+
+        # ── Rename raw fields → descriptive Silver column names ────────────
         .withColumnRenamed("s", "symbol")
         .withColumnRenamed("t", "trade_id")
         .withColumnRenamed("m", "buyer_is_maker")
-        # Ingest audit column
+
+        # ── Audit column ───────────────────────────────────────────────────
         .withColumn("silver_ingested_at",
                     F.lit(datetime.now(timezone.utc).isoformat()))
-        # Drop raw string columns now superseded
+
+        # ── Drop superseded raw fields ─────────────────────────────────────
         .drop("p", "q", "E", "T", "M", "e")
     )
 
@@ -213,14 +199,13 @@ def cast_and_enrich(df: DataFrame) -> DataFrame:
 # ── Deduplication ─────────────────────────────────────────────────────────────
 def deduplicate(df: DataFrame) -> DataFrame:
     """
-    Deduplicate by (symbol, trade_id) — Binance guarantees trade_id is unique
-    per symbol. Keep the row with the latest ingested_at.
+    Deduplicate by (symbol, trade_id) — Binance guarantees trade_id is globally
+    unique per symbol. Keep the row with the latest ingested_at timestamp.
     """
     log.info("Deduplicating by (symbol, trade_id)…")
     window = (
-        __import__("pyspark.sql.window", fromlist=["Window"])
-        .Window.partitionBy("symbol", "trade_id")
-        .orderBy(F.col("ingested_at").desc())
+        Window.partitionBy("symbol", "trade_id")
+              .orderBy(F.col("ingested_at").desc())
     )
     deduped = (
         df
@@ -234,19 +219,44 @@ def deduplicate(df: DataFrame) -> DataFrame:
     return deduped
 
 
+# ── Quarantine Writer ─────────────────────────────────────────────────────────
+def write_quarantine(df: DataFrame):
+    """
+    Write bad rows to quarantine Delta table for audit and reprocessing.
+    Uses Append mode so each run's bad rows accumulate for investigation.
+    """
+    if df.isEmpty():
+        log.info("[Quarantine] No bad rows — skipping quarantine write.")
+        return
+
+    log.info("[Quarantine] Writing %d bad rows to: %s", df.count(), QUARANTINE_PATH)
+    (
+        df
+        .withColumn("quarantine_dt", F.current_date())
+        .write
+        .format("delta")
+        .mode("append")
+        .option("mergeSchema", "true")
+        .partitionBy("quarantine_dt")
+        .save(QUARANTINE_PATH)
+    )
+    log.info("[Quarantine] ✅ Quarantine write complete.")
+
+
 # ── Silver Writer ─────────────────────────────────────────────────────────────
 def write_silver(df: DataFrame):
     """
     Write to Silver Delta table.
-    Mode: OVERWRITE — full daily reprocessing is idempotent and safe.
-    Partition: by symbol so Trino can leverage partition pruning.
 
-    Why Overwrite and not Append?
-    - Silver is a *clean* view of Bronze. If we re-run the job (e.g. after code
-      fixes), we want a fresh clean dataset — not duplicate Silver rows.
-    - The Bronze layer already provides the Append / history guarantee.
-    - Overwrite + .partitionBy("symbol") replaces only the affected partitions
-      (DYNAMIC partition overwrite), so unchanged symbol partitions are safe.
+    Mode: OVERWRITE with DYNAMIC partition overwrite.
+      - Silver is an idempotent clean view of Bronze.
+      - Re-running produces a fresh clean dataset without duplicates.
+      - partitionOverwriteMode=dynamic only replaces (symbol, dt) partitions
+        that appear in this batch — historical partitions are untouched.
+
+    Partition: (symbol, dt)
+      - symbol  → partition pruning when querying a single coin (e.g. BTCUSDT)
+      - dt      → FIX 2: partition pruning for historical date-range queries
     """
     log.info("Writing Silver Delta table to: %s", SILVER_PATH)
     (
@@ -254,12 +264,13 @@ def write_silver(df: DataFrame):
         .write
         .format("delta")
         .mode("overwrite")
-        .option("overwriteSchema", "true")            # allow schema evolution
-        .option("partitionOverwriteMode", "dynamic")  # only overwrite touched partitions
-        .partitionBy("symbol")
+        .option("overwriteSchema", "true")
+        .option("partitionOverwriteMode", "dynamic")
+        # FIX 2: two-level partition hierarchy (symbol / dt)
+        .partitionBy("symbol", "dt")
         .save(SILVER_PATH)
     )
-    log.info("✅ Silver write complete — partitioned by symbol")
+    log.info("✅ Silver write complete — partitioned by (symbol, dt)")
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
@@ -267,29 +278,30 @@ def main():
     log.info("=== Bronze → Silver Pipeline starting ===")
     spark = create_spark()
     try:
-        # 1. Read
+        # 1. Read Bronze
         bronze_df = read_bronze(spark)
 
-        # 2. Cast & enrich (needed before DQ so we have numeric types)
+        # 2. Cast & enrich (Decimal precision + dt extraction)
         cast_df = cast_and_enrich(bronze_df)
 
-        # 3. Data Quality gate
-        clean_df = run_quality_checks(cast_df, stage="post_cast")
+        # 3. FIX 3: Split clean vs bad rows — never abort for bad data
+        clean_df, quarantine_df = split_valid_quarantine(cast_df)
 
-        # 4. Deduplicate
+        # 4. Write quarantine for audit (always, even if empty)
+        write_quarantine(quarantine_df)
+
+        # 5. Deduplicate clean rows
         deduped_df = deduplicate(clean_df)
 
-        # 5. Write Silver
+        # 6. Write Silver
         write_silver(deduped_df)
 
         log.info("=== Bronze → Silver Pipeline COMPLETE ===")
 
-    except DataQualityException as dqe:
-        log.critical("DQ gate failed — aborting pipeline: %s", dqe)
-        sys.exit(1)
     except Exception as exc:
-        log.critical("Unexpected failure: %s", exc, exc_info=True)
-        sys.exit(2)
+        # Only genuine infra/Spark failures reach here (not DQ issues)
+        log.critical("Infrastructure failure — aborting pipeline: %s", exc, exc_info=True)
+        raise  # let the orchestrator (Airflow) handle retry/alerting
     finally:
         spark.stop()
 
