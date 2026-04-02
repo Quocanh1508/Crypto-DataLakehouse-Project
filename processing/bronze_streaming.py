@@ -4,12 +4,21 @@ bronze_streaming.py
 Phase 3 — Kafka → Bronze Delta Lake (Structured Streaming)
 
 Architecture:
-  SOURCE  : Kafka topic `crypto_trades_raw` (JSON)
-  SINK    : Delta Lake s3a://bronze/crypto_trades/
-  MODE    : Append (streaming)
-  TRIGGER : ProcessingTime("30 seconds")  — micro-batch every 30s
-  DEDUP   : Spark dropDuplicates on (symbol, trade_id) per micro-batch
-  CHECKPOINT: s3a://checkpoints/kafka_to_bronze/
+  SOURCE     : Kafka topic `crypto_trades_raw` (JSON)
+  SINK       : Delta Lake s3a://bronze/crypto_trades/
+  MODE       : Append (streaming, raw/immutable)
+  TRIGGER    : ProcessingTime("30 seconds") — micro-batch every 30s
+  PARTITIONS : (processing_date, s) — date-first prevents small files
+  CHECKPOINT : s3a://checkpoints/kafka_to_bronze/
+
+Design decisions:
+  - NO deduplication at Bronze. Bronze is raw truth. Any dedup logic here
+    risks permanent data loss if the logic is wrong. Silver owns cleansing.
+  - NO withWatermark+dropDuplicates in streaming. Without a watermark,
+    Spark holds ALL historical state in memory → OOM on long runs.
+  - Partition by (processing_date, s): date-first partitioning creates
+    daily directory boundaries per symbol, preventing millions of tiny
+    files from accumulating in a single symbol partition over months.
 
 Run locally:
   python processing/bronze_streaming.py
@@ -101,22 +110,33 @@ def main():
             F.from_json(F.col("value").cast("string"), TRADE_SCHEMA).alias("data")
         )
         .select("data.*")
-        # Drop micro-batch duplicates (symbol + trade_id)
-        .dropDuplicates(["s", "t"])
+        # FIX 1 & 2: No deduplication here.
+        # Bronze = raw immutable truth. Dedup belongs in Silver batch job.
+        # Streaming dedup without withWatermark holds ALL history in memory → OOM.
+        # FIX 3: Derive processing_date from Binance event time field E (epoch ms).
+        # Date-first partitioning creates daily boundaries, preventing millions of
+        # tiny files from accumulating in a single symbol directory over months.
+        .withColumn(
+            "processing_date",
+            F.to_date(F.from_unixtime(F.col("E") / 1000))
+        )
     )
 
-    # ── Write to Bronze Delta (Append!) ──────────────────────────────────
+    # ── Write to Bronze Delta (Append, raw, no filtering) ────────────────
     # Why Append?
     #   - Bronze is raw/immutable history. We never overwrite it.
     #   - Streaming requires Append or Complete mode.
-    #   - Partition by symbol for partition pruning downstream.
+    # Why (processing_date, s) partition order?
+    #   - Date-first means each micro-batch only opens ONE directory per day.
+    #   - Symbol-first would open 50 directories per micro-batch, creating
+    #     O(symbols × batches-per-day) = O(50 × 2880) = 144,000 tiny files/day.
     query = (
         parsed.writeStream
         .format("delta")
         .outputMode("append")
         .option("checkpointLocation", CHECKPOINT_PATH)
-        .option("mergeSchema", "true")          # handle field additions gracefully
-        .partitionBy("s")                        # s = symbol
+        .option("mergeSchema", "true")              # handle field additions gracefully
+        .partitionBy("processing_date", "s")        # FIX 3: date-first partition
         .trigger(processingTime="30 seconds")
         .start(BRONZE_PATH)
     )
