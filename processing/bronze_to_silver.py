@@ -50,6 +50,7 @@ from pyspark.sql.types import (
     LongType, BooleanType, TimestampType, DecimalType
 )
 from pyspark.sql.window import Window
+from delta.tables import DeltaTable
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -59,13 +60,9 @@ logging.basicConfig(
 log = logging.getLogger("bronze_to_silver")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "admin123")
-
-BRONZE_PATH      = "s3a://bronze/crypto_trades"
-SILVER_PATH      = "s3a://silver/crypto_trades"
-QUARANTINE_PATH  = "s3a://silver/quarantine"
+BRONZE_PATH      = "gs://crypto-lakehouse-group8/bronze"
+SILVER_PATH      = "gs://crypto-lakehouse-group8/silver"
+QUARANTINE_PATH  = "gs://crypto-lakehouse-group8/silver/quarantine"
 
 # DecimalType(38, 18): 38 total digits, 18 after decimal point.
 # This matches the precision used in SQL financial systems and avoids
@@ -87,14 +84,13 @@ def create_spark() -> SparkSession:
                 "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        # ── MinIO / S3A connector ──────────────────────────────────────────
-        .config("spark.hadoop.fs.s3a.endpoint",          MINIO_ENDPOINT)
-        .config("spark.hadoop.fs.s3a.access.key",        MINIO_ACCESS_KEY)
-        .config("spark.hadoop.fs.s3a.secret.key",        MINIO_SECRET_KEY)
-        .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.hadoop.fs.s3a.impl",
-                "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
+        # ── GCS Connector / ADC Auth ───────────────────────────────────────
+        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
+        .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
+        .config("spark.hadoop.fs.gs.auth.service.account.enable", "false")
+        .config("spark.hadoop.google.cloud.auth.type", "APPLICATION_DEFAULT")
+        # Delta Atomicity on GCS
+        .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
         # ── Performance tuning for local single-machine run ────────────────
         .config("spark.driver.memory",   "2g")
         .config("spark.executor.memory", "2g")
@@ -243,34 +239,43 @@ def write_quarantine(df: DataFrame):
     log.info("[Quarantine] ✅ Quarantine write complete.")
 
 
-# ── Silver Writer ─────────────────────────────────────────────────────────────
-def write_silver(df: DataFrame):
+# ── Silver Writer (UPSERT) ────────────────────────────────────────────────────
+def write_silver(spark: SparkSession, df: DataFrame):
     """
-    Write to Silver Delta table.
+    Write to Silver Delta table using MERGE INTO (Upsert).
 
-    Mode: OVERWRITE with DYNAMIC partition overwrite.
-      - Silver is an idempotent clean view of Bronze.
-      - Re-running produces a fresh clean dataset without duplicates.
-      - partitionOverwriteMode=dynamic only replaces (symbol, dt) partitions
-        that appear in this batch — historical partitions are untouched.
-
-    Partition: (symbol, dt)
-      - symbol  → partition pruning when querying a single coin (e.g. BTCUSDT)
-      - dt      → FIX 2: partition pruning for historical date-range queries
+    Why Merge over Overwrite?
+    - Dual ingestion (WS + REST) guarantees overlapping trade_ids.
+    - Idempotency is preserved by only inserting new trades (`whenNotMatchedInsertAll`),
+      or updating existing if you have mutating logic (we just ignore them here since
+      trades are immutable).
     """
     log.info("Writing Silver Delta table to: %s", SILVER_PATH)
-    (
-        df
-        .write
-        .format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true")
-        .option("partitionOverwriteMode", "dynamic")
-        # FIX 2: two-level partition hierarchy (symbol / dt)
-        .partitionBy("symbol", "dt")
-        .save(SILVER_PATH)
-    )
-    log.info("✅ Silver write complete — partitioned by (symbol, dt)")
+
+    if DeltaTable.isDeltaTable(spark, SILVER_PATH):
+        log.info("Table exists. Performing MERGE (upsert)...")
+        silver_table = DeltaTable.forPath(spark, SILVER_PATH)
+        (
+            silver_table.alias("target")
+            .merge(
+                df.alias("source"),
+                "target.trade_id = source.trade_id AND target.symbol = source.symbol"
+            )
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
+        log.info("✅ Silver merge (upsert) complete.")
+    else:
+        log.info("Table does not exist. Performing initial creation...")
+        (
+            df.write
+            .format("delta")
+            .mode("overwrite")
+            # FIX 2: two-level partition hierarchy (symbol / dt)
+            .partitionBy("symbol", "dt")
+            .save(SILVER_PATH)
+        )
+        log.info("✅ Silver initial write complete — partitioned by (symbol, dt)")
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
@@ -293,8 +298,8 @@ def main():
         # 5. Deduplicate clean rows
         deduped_df = deduplicate(clean_df)
 
-        # 6. Write Silver
-        write_silver(deduped_df)
+        # 6. Write Silver (Merge/Upsert)
+        write_silver(spark, deduped_df)
 
         log.info("=== Bronze → Silver Pipeline COMPLETE ===")
 

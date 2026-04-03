@@ -43,12 +43,9 @@ log = logging.getLogger("kafka_to_bronze")
 # ── Config ────────────────────────────────────────────────────────────────────
 KAFKA_BOOTSTRAP  = os.getenv("KAFKA_BOOTSTRAP_SERVERS",  "localhost:9092")
 KAFKA_TOPIC      = os.getenv("KAFKA_TOPIC_RAW",          "crypto_trades_raw")
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",           "http://localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY",         "admin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY",         "admin123")
 
-BRONZE_PATH      = "s3a://bronze/crypto_trades"
-CHECKPOINT_PATH  = "s3a://checkpoints/kafka_to_bronze"
+BRONZE_PATH      = "gs://crypto-lakehouse-group8/bronze"
+CHECKPOINT_PATH  = "gs://crypto-lakehouse-group8/checkpoints/kafka_to_bronze"
 
 # ── Known schema for Binance trade tick ──────────────────────────────────────
 TRADE_SCHEMA = StructType([
@@ -74,13 +71,13 @@ def create_spark() -> SparkSession:
                 "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        .config("spark.hadoop.fs.s3a.endpoint",          MINIO_ENDPOINT)
-        .config("spark.hadoop.fs.s3a.access.key",        MINIO_ACCESS_KEY)
-        .config("spark.hadoop.fs.s3a.secret.key",        MINIO_SECRET_KEY)
-        .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.hadoop.fs.s3a.impl",
-                "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
+        # ── GCS Connector / ADC Auth ───────────────────────────────────────
+        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
+        .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
+        .config("spark.hadoop.fs.gs.auth.service.account.enable", "false")
+        .config("spark.hadoop.google.cloud.auth.type", "APPLICATION_DEFAULT")
+        # Delta Atomicity on GCS
+        .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
         .config("spark.driver.memory",   "1g")
         .config("spark.sql.shuffle.partitions", "4")
         .getOrCreate()
