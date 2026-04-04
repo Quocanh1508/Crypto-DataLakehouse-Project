@@ -84,11 +84,11 @@ def create_spark() -> SparkSession:
                 "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        # ── GCS Connector / ADC Auth ───────────────────────────────────────
+        # ── GCS Connector Auth (Nuclear approach) ─────────────────────
         .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
-        .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
-        .config("spark.hadoop.fs.gs.auth.service.account.enable", "false")
-        .config("spark.hadoop.google.cloud.auth.type", "APPLICATION_DEFAULT")
+        .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
+        .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "/home/spark/.config/gcloud/application_default_credentials.json"))
+        .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
         # Delta Atomicity on GCS
         .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
         # ── Performance tuning for local single-machine run ────────────────
@@ -121,7 +121,7 @@ def split_valid_quarantine(df: DataFrame):
         "quarantine_reason",
         F.concat_ws("; ",
             F.when(F.col("trade_id").isNull(),          F.lit("null trade_id")),
-            F.when(F.col("e") != "trade",               F.lit("invalid event_type")),
+            F.when(F.col("event_type") != "trade",      F.lit("invalid event_type")),
             F.when(F.col("price_decimal").isNull(),     F.lit("null price after cast")),
             F.when(F.col("price_decimal") <= 0,         F.lit("price <= 0")),
             F.when(F.col("quantity_decimal").isNull(),  F.lit("null quantity after cast")),
@@ -173,22 +173,21 @@ def cast_and_enrich(df: DataFrame) -> DataFrame:
         .withColumn("quantity_decimal", F.col("q").cast(PRICE_DECIMAL))
 
         # ── FIX 2: Timestamps + daily partition column ─────────────────────
-        .withColumn("event_time",  (F.col("E") / 1000).cast(TimestampType()))
-        .withColumn("trade_time",  (F.col("T") / 1000).cast(TimestampType()))
-        # dt = DATE derived from event_time (E), used for partition pruning
-        .withColumn("dt", F.to_date((F.col("E") / 1000).cast(TimestampType())))
+        .withColumn("event_time",  (F.col("event_time_ms") / 1000).cast(TimestampType()))
+        .withColumn("trade_time",  (F.col("trade_time") / 1000).cast(TimestampType()))
+        # dt = DATE derived from event_time, used for partition pruning
+        .withColumn("dt", F.to_date((F.col("event_time_ms") / 1000).cast(TimestampType())))
 
         # ── Rename raw fields → descriptive Silver column names ────────────
         .withColumnRenamed("s", "symbol")
-        .withColumnRenamed("t", "trade_id")
-        .withColumnRenamed("m", "buyer_is_maker")
+        .withColumnRenamed("buyer_maker", "buyer_is_maker")
 
         # ── Audit column ───────────────────────────────────────────────────
         .withColumn("silver_ingested_at",
                     F.lit(datetime.now(timezone.utc).isoformat()))
 
         # ── Drop superseded raw fields ─────────────────────────────────────
-        .drop("p", "q", "E", "T", "M", "e")
+        .drop("p", "q", "event_time_ms", "ignore_m")
     )
 
 

@@ -27,21 +27,24 @@ TOPIC           = os.getenv("KAFKA_TOPIC_RAW", "crypto_trades_raw")
 BRONZE_PATH     = "gs://crypto-lakehouse-group8/bronze"
 SILVER_PATH     = "gs://crypto-lakehouse-group8/silver"
 
-# Authentication for GCP
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.join(os.getenv("APPDATA", ""), "gcloud", "application_default_credentials.json")
 
 
 def create_spark() -> SparkSession:
+    adc_path = os.getenv(
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "/home/spark/.config/gcloud/application_default_credentials.json"
+    )
     spark = (
         SparkSession.builder
         .appName("PipelineValidator")
         .master("local[*]")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        # GCS Connector Auth (Nuclear approach)
         .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
-        .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
-        .config("spark.hadoop.fs.gs.auth.service.account.enable", "false")
-        .config("spark.hadoop.google.cloud.auth.type", "APPLICATION_DEFAULT")
+        .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
+        .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", adc_path)
+        .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -96,10 +99,10 @@ def check_latency(spark: SparkSession):
     try:
         df = spark.read.format("delta").load(BRONZE_PATH)
         
-        # event time (E) is epoch ms. ingested_at is ISO string
+        # event time (event_time_ms) is epoch ms. ingested_at is ISO string
         latency_df = (
             df
-            .withColumn("event_ts", F.to_timestamp(F.from_unixtime(F.col("E") / 1000)))
+            .withColumn("event_ts", F.to_timestamp(F.from_unixtime(F.col("event_time_ms") / 1000)))
             .withColumn("ingest_ts", F.to_timestamp("ingested_at"))
             .withColumn("latency_seconds", F.unix_timestamp("ingest_ts") - F.unix_timestamp("event_ts"))
         )

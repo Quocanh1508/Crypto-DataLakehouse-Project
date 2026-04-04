@@ -48,21 +48,28 @@ BRONZE_PATH      = "gs://crypto-lakehouse-group8/bronze"
 CHECKPOINT_PATH  = "gs://crypto-lakehouse-group8/checkpoints/kafka_to_bronze"
 
 # ── Known schema for Binance trade tick ──────────────────────────────────────
+# NOTE: Spark 4.x is case-insensitive. Fields "e" and "E" in the same struct
+# are treated as duplicates. We rename them here at parse time.
 TRADE_SCHEMA = StructType([
-    StructField("e",           StringType(),  True),
-    StructField("E",           LongType(),    True),
+    StructField("event_type",  StringType(),  True),   # was "e"
+    StructField("event_time_ms", LongType(),  True),   # was "E"
     StructField("s",           StringType(),  True),
-    StructField("t",           LongType(),    True),
+    StructField("trade_id",    LongType(),    True),   # was "t"
     StructField("p",           StringType(),  True),
     StructField("q",           StringType(),  True),
-    StructField("T",           LongType(),    True),
-    StructField("m",           BooleanType(), True),
-    StructField("M",           BooleanType(), True),
+    StructField("trade_time",  LongType(),    True),   # was "T"
+    StructField("buyer_maker", BooleanType(), True),   # was "m"
+    StructField("ignore_m",    BooleanType(), True),   # was "M"
     StructField("ingested_at", StringType(),  True),
 ])
 
 
 def create_spark() -> SparkSession:
+    # Path where ADC credentials are mounted inside container
+    adc_path = os.getenv(
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "/home/spark/.config/gcloud/application_default_credentials.json"
+    )
     return (
         SparkSession.builder
         .appName("KafkaToBronze")
@@ -71,13 +78,15 @@ def create_spark() -> SparkSession:
                 "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        # ── GCS Connector / ADC Auth ───────────────────────────────────────
+        # ── GCS Connector Auth (ADC user credentials) ─────────────────────
         .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
         .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
-        .config("spark.hadoop.fs.gs.auth.service.account.enable", "false")
-        .config("spark.hadoop.google.cloud.auth.type", "APPLICATION_DEFAULT")
-        # Delta Atomicity on GCS
+        .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
+        .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", adc_path)
+        .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
+        # Delta atomicity on GCS + bypass Spark 4 TimeAdd bug
         .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
+        .config("spark.databricks.delta.retentionDurationCheck.enabled", "false")
         .config("spark.driver.memory",   "1g")
         .config("spark.sql.shuffle.partitions", "4")
         .getOrCreate()
@@ -101,21 +110,32 @@ def main():
     )
 
     # ── Deserialise JSON payload ──────────────────────────────────────────
+    # FIX: Spark 4.x is case-insensitive. e/E, t/T, m/M are duplicate columns.
+    # We rename the keys directly in the JSON string before parsing.
     parsed = (
         raw_stream
+        .withColumn("raw", F.col("value").cast("string"))
+        .withColumn("clean_json", F.expr("""
+            replace(replace(replace(replace(replace(replace(
+                raw, 
+            '"e":', '"event_type":'), 
+            '"E":', '"event_time_ms":'), 
+            '"t":', '"trade_id":'), 
+            '"T":', '"trade_time":'), 
+            '"m":', '"buyer_maker":'), 
+            '"M":', '"ignore_m":')
+        """))
         .select(
-            F.from_json(F.col("value").cast("string"), TRADE_SCHEMA).alias("data")
+            F.from_json("clean_json", TRADE_SCHEMA).alias("data")
         )
+        # Schema already has unambiguous names (event_type, event_time_ms)
+        # so .select("data.*") is safe in Spark 4.x
         .select("data.*")
-        # FIX 1 & 2: No deduplication here.
-        # Bronze = raw immutable truth. Dedup belongs in Silver batch job.
-        # Streaming dedup without withWatermark holds ALL history in memory → OOM.
-        # FIX 3: Derive processing_date from Binance event time field E (epoch ms).
-        # Date-first partitioning creates daily boundaries, preventing millions of
-        # tiny files from accumulating in a single symbol directory over months.
+        # FIX 1 & 2: No deduplication here. Bronze = raw immutable truth.
+        # FIX 3: Date-first partitioning prevents small files.
         .withColumn(
             "processing_date",
-            F.to_date(F.from_unixtime(F.col("E") / 1000))
+            F.to_date(F.from_unixtime(F.col("event_time_ms") / 1000))
         )
     )
 
