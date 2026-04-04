@@ -88,3 +88,26 @@ If you are setting up the monitoring stack, here are the critical integration po
 * **Bronze Path**: `gs://crypto-lakehouse-group8/bronze`
 * **Silver Path**: `gs://crypto-lakehouse-group8/silver`
 * **Metrics Goal**: You can track storage size directly inside Google Cloud Metrics. Also, our `gcs_setup.ps1` granted `logging.logWriter` to the Service Account, so you can scrape Cloud Logging directly for any GCS API errors or Delta Lake lock timeouts.
+
+## 6. Query Strategy – Partition Warning 📂
+
+> [!WARNING]  
+> The Silver layer is partitioned strictly by `(symbol, dt)`. 
+> Queries without filters (e.g., `SELECT * FROM silver_trades`) will trigger full table scans across all symbols and dates.
+
+* **Impact**: Trino, Spark, or BigQuery will span the entire dataset, massively driving up query costs and latency.
+* **Rule**: All SQL queries MUST include `WHERE symbol = '...' AND dt = '...'`. Violations of this scan policy count directly against team cost-management discipline.
+
+## 7. Schema Enforcement – Delta Lake 🧩
+
+* **Issue**: Modifications to the Silver → Gold logic risk severe schema drift.
+* **Impact**: Adding or removing columns without control causes job failures or irreversible data inconsistency.
+* **Rule**: Delta Lake natively enforces schema conformity. Use `.option("mergeSchema", "true")` ONLY when actively adding new operational columns. Never drop existing columns from the schema definitions without explicit leader approval.
+
+## 8. Network Access – VPC Firewall 🌐
+
+> [!NOTE]  
+> Remote access to Spark or Kafka UIs is often inherently blocked by GCP VPC cloud firewalls or Docker security defaults.
+
+* **Impact**: Team members attempting to reach the dashboards from outside the `localhost` network will face timeouts.
+* **Action**: Configure SSH tunnels to securely map internal ports to your machine, or verify cloud firewall rules for ports `8080` (Spark Master), `8081` (Worker), `4040` (App Jobs), and `9092` (Kafka). Ensure correct static IP addresses are whitelisted to avoid unnecessary support calls.
