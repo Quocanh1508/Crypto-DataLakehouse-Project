@@ -127,8 +127,8 @@ Data flows through a three-tier **Medallion Architecture**:
 |---|---|---|---|
 | **Message Broker** | Apache Kafka (Confluent) | 7.5.0 | Real-time trade tick streaming |
 | **Coordination** | Apache ZooKeeper | 7.5.0 | Kafka cluster management |
-| **Object Storage** | MinIO | latest | S3-compatible data lake storage |
-| **Processing** | Apache Spark | 4.1.1 | Streaming & batch ETL engine |
+| **Object Storage** | MinIO | 2025-09-07T16-13-09Z | S3-compatible data lake storage |
+| **Processing** | Apache Spark | 3.5.8 | Streaming & batch ETL engine |
 | **Table Format** | Delta Lake | 3.x | ACID transactions on object storage |
 | **Metastore** | Hive Metastore (Starburst) | 3.1.2-e.18 | Table schema & metadata catalog |
 | **Metastore DB** | PostgreSQL | 15-alpine | HMS backend database |
