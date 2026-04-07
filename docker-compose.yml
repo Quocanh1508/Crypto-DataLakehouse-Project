@@ -36,7 +36,7 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
-      
+
   kafka-connect:
     image: confluentinc/cp-kafka-connect-base:7.5.0
     container_name: kafka-connect
@@ -174,7 +174,7 @@ services:
     networks:
       - lakehouse-net
 
-  # ── Processing Engine (Spark 4.1.1 Custom) ────────────────────────────────────
+  # ── Processing Engine (Spark 3.5.8 Custom) ────────────────────────────────────
   spark-master:
     build:
       context: ./spark
@@ -182,12 +182,9 @@ services:
     mem_limit: 1g
     environment:
       - SPARK_ROLE=master
-<<<<<<< HEAD
-=======
       - GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json
     volumes:
-      - ${APPDATA}\gcloud:/home/spark/.config/gcloud:ro
->>>>>>> c36f46593bb1b7c930ee24d5f786bd2245a7fe01
+      - "${APPDATA}/gcloud:/home/spark/.config/gcloud:ro"
     ports:
       - "7077:7077"
       - "8082:8080"   # Spark Web UI (8080 is taken by Trino)
@@ -206,12 +203,9 @@ services:
       - SPARK_MASTER_URL=spark://spark-master:7077
       - SPARK_WORKER_MEMORY=1500M
       - SPARK_WORKER_CORES=2
-<<<<<<< HEAD
-=======
       - GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json
     volumes:
-      - ${APPDATA}\gcloud:/home/spark/.config/gcloud:ro
->>>>>>> c36f46593bb1b7c930ee24d5f786bd2245a7fe01
+      - "${APPDATA}/gcloud:/home/spark/.config/gcloud:ro"
     networks:
       - lakehouse-net
 

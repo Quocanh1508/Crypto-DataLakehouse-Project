@@ -54,7 +54,7 @@ raw_batch/
 *.parquet
 *.tgz
 *.zip
-spark/spark-4.1.1-bin-hadoop3.tgz
+spark/spark-3.5.8-bin-hadoop3.tgz
 
 # Ignore Python Virtual Env
 venv/

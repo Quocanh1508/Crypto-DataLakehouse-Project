@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-7.5.0-231F20?style=for-the-badge&logo=apachekafka&logoColor=white)](https://kafka.apache.org/)
-[![Apache Spark](https://img.shields.io/badge/Apache_Spark-4.1.1-E25A1C?style=for-the-badge&logo=apachespark&logoColor=white)](https://spark.apache.org/)
+[![Apache Spark](https://img.shields.io/badge/Apache_Spark-3.5.8-E25A1C?style=for-the-badge&logo=apachespark&logoColor=white)](https://spark.apache.org/)
 [![Delta Lake](https://img.shields.io/badge/Delta_Lake-3.x-003366?style=for-the-badge&logo=delta&logoColor=white)](https://delta.io/)
 [![MinIO](https://img.shields.io/badge/MinIO-S3--Compatible-C72E49?style=for-the-badge&logo=minio&logoColor=white)](https://min.io/)
 [![Trino](https://img.shields.io/badge/Trino-432-DD00A1?style=for-the-badge&logo=trino&logoColor=white)](https://trino.io/)
@@ -160,7 +160,7 @@ FinalProject/
 │   └── requirements.txt            # kafka-python, websocket-client, boto3, tenacity…
 │
 ├── 📂 spark/                       # Custom Spark image
-│   ├── Dockerfile                  # Spark 4.1.1 with Delta Lake + S3A connectors
+│   ├── Dockerfile                  # Spark 3.5.8 with Delta Lake + S3A connectors
 │   └── start-spark.sh              # Entrypoint for master / worker roles
 │
 ├── 📂 trino/
@@ -351,7 +351,7 @@ docker exec -it kafka kafka-console-consumer \
 # Submit a Spark job to the cluster (example)
 docker exec spark-master spark-submit \
   --master spark://spark-master:7077 \
-  --packages io.delta:delta-spark_2.13:3.1.0 \
+  --packages io.delta:delta-spark_2.12:3.1.0 \
   /opt/spark/jobs/bronze_to_silver.py
 ```
 
