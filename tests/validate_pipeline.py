@@ -13,9 +13,10 @@ Tests:
 import os
 import sys
 import logging
-from kafka import KafkaConsumer, TopicPartition
+
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.types import DecimalType
 from pyspark.sql.types import DecimalType
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s]  %(message)s")
@@ -34,19 +35,20 @@ def create_spark() -> SparkSession:
         "GOOGLE_APPLICATION_CREDENTIALS",
         "/home/spark/.config/gcloud/application_default_credentials.json"
     )
-    spark = (
+    builder = (
         SparkSession.builder
         .appName("PipelineValidator")
         .master("local[*]")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         # GCS Connector Auth (Nuclear approach)
+        .config("spark.jars.packages", "com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.22")
         .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
         .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
         .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", adc_path)
         .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
-        .getOrCreate()
     )
+    spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
     return spark
 
@@ -54,23 +56,20 @@ def create_spark() -> SparkSession:
 def check_data_integrity(spark: SparkSession):
     log.info("=== 1. Data Integrity & Loss Test ===")
     
-    # 1. Count exact messages published to Kafka
-    log.info("Querying Kafka broker for total published messages...")
+    # 1. Count exact messages published to Kafka using PySpark
+    log.info("Querying Kafka broker for total published messages via PySpark...")
     try:
-        consumer = KafkaConsumer(bootstrap_servers=KAFKA_BOOTSTRAP)
-        partitions = consumer.partitions_for_topic(TOPIC)
-        if not partitions:
-            log.warning(f"Topic {TOPIC} does not exist or has no partitions. Is ingestion running?")
-            kafka_total = 0
-        else:
-            tps = [TopicPartition(TOPIC, p) for p in partitions]
-            end_offsets = consumer.end_offsets(tps)
-            beginning_offsets = consumer.beginning_offsets(tps)
-            
-            kafka_total = sum(end_offsets[tp] - beginning_offsets[tp] for tp in tps)
-        consumer.close()
+        kafka_df = (
+            spark.read.format("kafka")
+            .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
+            .option("subscribe", TOPIC)
+            .option("startingOffsets", "earliest")
+            .option("endingOffsets", "latest")
+            .load()
+        )
+        kafka_total = kafka_df.count()
     except Exception as e:
-        log.error(f"Failed to connect to Kafka: {e}")
+        log.error(f"Failed to read from Kafka via Spark: {e}")
         kafka_total = -1
 
     log.info(f"Total messages strictly generated to Kafka: {kafka_total:,}")
