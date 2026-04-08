@@ -36,7 +36,7 @@ RUN curl -sL \
 
 # Copy our custom startup script
 COPY start-spark.sh /
-RUN chmod +x /start-spark.sh
+RUN chmod +x /start-spark.sh && sed -i 's/\r$//' /start-spark.sh
 
 # The script decides whether to start master or worker based on $SPARK_ROLE
 ENTRYPOINT ["/start-spark.sh"]
