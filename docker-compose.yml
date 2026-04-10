@@ -174,7 +174,7 @@ services:
     networks:
       - lakehouse-net
 
-  # ── Processing Engine (Spark 4.1.1 Custom) ────────────────────────────────────
+  # ── Processing Engine (Spark 3.5.8 Custom) ────────────────────────────────────
   spark-master:
     build:
       context: ./spark
@@ -184,7 +184,8 @@ services:
       - SPARK_ROLE=master
       - GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json
     volumes:
-      - ${APPDATA}\gcloud:/home/spark/.config/gcloud:ro
+      - "${APPDATA}/gcloud:/home/spark/.config/gcloud:ro"
+      - "./processing:/processing"
     ports:
       - "7077:7077"
       - "8082:8080"   # Spark Web UI (8080 is taken by Trino)
@@ -205,7 +206,8 @@ services:
       - SPARK_WORKER_CORES=2
       - GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json
     volumes:
-      - ${APPDATA}\gcloud:/home/spark/.config/gcloud:ro
+      - "${APPDATA}/gcloud:/home/spark/.config/gcloud:ro"
+      - "./processing:/processing"
     networks:
       - lakehouse-net
 

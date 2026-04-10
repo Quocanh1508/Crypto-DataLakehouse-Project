@@ -94,7 +94,7 @@ def make_on_message(producer: KafkaProducer):
             # Enrich with ingestion timestamp
             tick["ingested_at"] = datetime.utcnow().isoformat()
 
-            symbol = tick["s"]  # e.g. BTCUSDT
+            symbol = tick["s"]  
             producer.send(TOPIC_RAW, key=symbol, value=tick)
 
         except (json.JSONDecodeError, ValueError) as exc:

@@ -13,7 +13,11 @@ Tests:
 import os
 import sys
 import logging
-from kafka import KafkaConsumer, TopicPartition
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'processing'))
+from gcs_auth import apply_gcs_auth
+
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType
@@ -22,31 +26,33 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s]  %(m
 log = logging.getLogger("validator")
 
 # Config
-KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+# NOTE: Default to Docker-internal address (kafka:29092) because this script
+# runs inside the Docker lakehouse-net via the Spark cluster.
+# If running directly on host (dev/debug), override with:
+#   export KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
 TOPIC           = os.getenv("KAFKA_TOPIC_RAW", "crypto_trades_raw")
+# DEFAULT to cluster URL — scripts must run distributed, not local
+SPARK_MASTER    = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
 BRONZE_PATH     = "gs://crypto-lakehouse-group8/bronze"
 SILVER_PATH     = "gs://crypto-lakehouse-group8/silver"
 
 
 
 def create_spark() -> SparkSession:
-    adc_path = os.getenv(
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "/home/spark/.config/gcloud/application_default_credentials.json"
-    )
-    spark = (
+    log.info("Connecting to Spark Master: %s", SPARK_MASTER)
+    builder = (
         SparkSession.builder
-        .appName("PipelineValidator")
-        .master("local[*]")
+        .appName("PipelineValidator")  # shows up on Spark UI
+        .master(SPARK_MASTER)
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        # GCS Connector Auth (Nuclear approach)
-        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
-        .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
-        .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", adc_path)
-        .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
-        .getOrCreate()
+        .config("spark.sql.catalog.spark_catalog",
+                "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
     )
+    # Auto-detect SA Key vs ADC — no hardcoded auth type needed
+    builder = apply_gcs_auth(builder)
+    spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
     return spark
 
@@ -54,23 +60,20 @@ def create_spark() -> SparkSession:
 def check_data_integrity(spark: SparkSession):
     log.info("=== 1. Data Integrity & Loss Test ===")
     
-    # 1. Count exact messages published to Kafka
-    log.info("Querying Kafka broker for total published messages...")
+    # 1. Count exact messages published to Kafka using PySpark
+    log.info("Querying Kafka broker for total published messages via PySpark...")
     try:
-        consumer = KafkaConsumer(bootstrap_servers=KAFKA_BOOTSTRAP)
-        partitions = consumer.partitions_for_topic(TOPIC)
-        if not partitions:
-            log.warning(f"Topic {TOPIC} does not exist or has no partitions. Is ingestion running?")
-            kafka_total = 0
-        else:
-            tps = [TopicPartition(TOPIC, p) for p in partitions]
-            end_offsets = consumer.end_offsets(tps)
-            beginning_offsets = consumer.beginning_offsets(tps)
-            
-            kafka_total = sum(end_offsets[tp] - beginning_offsets[tp] for tp in tps)
-        consumer.close()
+        kafka_df = (
+            spark.read.format("kafka")
+            .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
+            .option("subscribe", TOPIC)
+            .option("startingOffsets", "earliest")
+            .option("endingOffsets", "latest")
+            .load()
+        )
+        kafka_total = kafka_df.count()
     except Exception as e:
-        log.error(f"Failed to connect to Kafka: {e}")
+        log.error(f"Failed to read from Kafka via Spark: {e}")
         kafka_total = -1
 
     log.info(f"Total messages strictly generated to Kafka: {kafka_total:,}")
