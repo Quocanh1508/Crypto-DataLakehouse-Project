@@ -26,6 +26,9 @@ venv.bak/
 minio_data/
 postgres_data/
 
+# GCP service account JSON (path via GCP_SERVICE_ACCOUNT_KEY in .env)
+secrets/*.json
+
 # Spark / Big Data
 _delta_log/
 /checkpoints/
