@@ -41,7 +41,11 @@ Run via Spark submit (inside container):
 
 import logging
 import os
+import sys
 from datetime import datetime, timezone
+# Add processing dir to path so gcs_auth is importable when spark-submit is used
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gcs_auth import apply_gcs_auth
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
@@ -77,29 +81,24 @@ PRICE_DECIMAL = DecimalType(38, 18)
 def create_spark() -> SparkSession:
     """Create a SparkSession configured for cluster run with Delta Lake + GCS."""
     log.info("Connecting to Spark Master: %s", SPARK_MASTER)
-    spark = (
+    builder = (
         SparkSession.builder
         .appName("BronzeToSilver")
         .master(SPARK_MASTER)
-        # ── Delta Lake extension ───────────────────────────────────────────
         .config("spark.sql.extensions",
                 "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        # ── GCS Connector Auth (Nuclear approach) ─────────────────────
-        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
-        .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
-        .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "/home/spark/.config/gcloud/application_default_credentials.json"))
-        .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
-        # Delta Atomicity on GCS
-        .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
-        # ── Performance tuning for cluster mode ────────────────────────────
+        .config("spark.delta.logStore.gs.impl",
+                "io.delta.storage.GCSLogStore")
         .config("spark.driver.memory",   "1g")
         .config("spark.executor.memory", "1500m")  # match worker mem_limit
         .config("spark.executor.cores",  "2")       # match worker cores
-        .config("spark.sql.shuffle.partitions", "8")  # 4 cores total in cluster
-        .getOrCreate()
+        .config("spark.sql.shuffle.partitions", "8")
     )
+    # Auto-detect SA Key vs ADC — no hardcoded auth type needed
+    builder = apply_gcs_auth(builder)
+    spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
     log.info("SparkSession ready — version %s | master: %s",
              spark.version, spark.sparkContext.master)

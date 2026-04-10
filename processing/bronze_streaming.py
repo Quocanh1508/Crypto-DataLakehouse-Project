@@ -26,6 +26,10 @@ Run locally:
 
 import logging
 import os
+import sys
+# Add processing dir to path so gcs_auth is importable when spark-submit is used
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gcs_auth import apply_gcs_auth
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
@@ -71,13 +75,8 @@ TRADE_SCHEMA = StructType([
 
 
 def create_spark() -> SparkSession:
-    # Path where ADC credentials are mounted inside container
-    adc_path = os.getenv(
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "/home/spark/.config/gcloud/application_default_credentials.json"
-    )
     log.info("Connecting to Spark Master: %s", SPARK_MASTER)
-    return (
+    builder = (
         SparkSession.builder
         .appName("KafkaToBronze")
         .master(SPARK_MASTER)
@@ -85,25 +84,19 @@ def create_spark() -> SparkSession:
                 "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        # ── GCS Connector Auth (ADC user credentials) ─────────────────────
-        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
-        .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
-        .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
-        .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", adc_path)
-        .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
-        # Delta atomicity on GCS + bypass Spark 4 TimeAdd bug
-        .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
-        .config("spark.databricks.delta.retentionDurationCheck.enabled", "false")
         .config("spark.driver.memory",   "1g")
         .config("spark.sql.shuffle.partitions", "4")
-        .getOrCreate()
     )
+    # Auto-detect SA Key vs ADC — no hardcoded auth type needed
+    builder = apply_gcs_auth(builder)
+    spark = builder.getOrCreate()
+    spark.sparkContext.setLogLevel("WARN")
+    return spark
 
 
 def main():
     log.info("=== Kafka → Bronze Streaming job starting ===")
     spark = create_spark()
-    spark.sparkContext.setLogLevel("WARN")
 
     # ── Read from Kafka ───────────────────────────────────────────────────
     raw_stream = (

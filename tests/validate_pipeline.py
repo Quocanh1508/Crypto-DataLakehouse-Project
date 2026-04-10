@@ -13,10 +13,13 @@ Tests:
 import os
 import sys
 import logging
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'processing'))
+from gcs_auth import apply_gcs_auth
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import DecimalType
 from pyspark.sql.types import DecimalType
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s]  %(message)s")
@@ -37,24 +40,18 @@ SILVER_PATH     = "gs://crypto-lakehouse-group8/silver"
 
 
 def create_spark() -> SparkSession:
-    adc_path = os.getenv(
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "/home/spark/.config/gcloud/application_default_credentials.json"
-    )
     log.info("Connecting to Spark Master: %s", SPARK_MASTER)
     builder = (
         SparkSession.builder
         .appName("PipelineValidator")  # shows up on Spark UI
         .master(SPARK_MASTER)
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        # GCS Connector Auth (Nuclear approach)
-        .config("spark.jars.packages", "com.google.cloud.bigdataoss:gcs-connector:hadoop3-2.2.22")
-        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
-        .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
-        .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", adc_path)
-        .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
+        .config("spark.sql.catalog.spark_catalog",
+                "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
     )
+    # Auto-detect SA Key vs ADC — no hardcoded auth type needed
+    builder = apply_gcs_auth(builder)
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
     return spark

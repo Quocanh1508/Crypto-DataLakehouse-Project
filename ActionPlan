@@ -1,0 +1,73 @@
+# MASTER ACTION PLAN: REAL-TIME CRYPTO DATA LAKEHOUSE (TOP 50 DYNAMIC STREAMING)
+
+## I. Architectural Self-Critique & Core Refinements
+Before execution, we must critically evaluate the design to identify potential bottlenecks.
+
+### 1. The Memory Dilemma (Self-Critique)
+* **Question:** Is 10GB RAM genuinely enough for 7 JVM-based containers?
+* **Reality Check:** Zookeeper, Kafka, MinIO, Postgres, Hive Metastore, Spark, and Trino running simultaneously will aggressively compete for memory.
+* **Refinement:** Enforce strict `mem_limit` constraints in `docker-compose.yml`. Spark executor memory must be hard-capped at 2GB, and Trino at 2GB.
+
+### 2. The "Small Files" Problem (Self-Critique)
+* **Question:** Spark Streaming writes to Delta Lake every few seconds. Won't this create millions of tiny files on MinIO, destroying Trino's query performance?
+* **Reality Check:** Yes. Streaming directly to object storage causes extreme metadata fragmentation.
+* **Refinement:** We MUST introduce a daily `OPTIMIZE` (Compaction) batch job using Spark to compact these small files into larger, efficient blocks.
+
+### 3. Data Scalability & Query Performance (Self-Critique)
+* **Question:** Tracking 50 coins simultaneously will generate massive data volumes. How do we prevent full-table scans when Power BI queries a single coin like BTC?
+* **Reality Check:** Without a physical data organization strategy, Trino will scan all 50 coins' data just to find one.
+* **Refinement:** Implement Delta Lake Partitioning. The Spark job MUST write data using `.partitionBy("symbol")`. This forces MinIO to create physical sub-directories for each coin, allowing Trino to bypass irrelevant data instantly (Partition Pruning).
+
+---
+
+## II. Detailed Execution Roadmap
+
+### Phase 1: Infrastructure & Network Provisioning (Week 1)
+**Goal:** Establish a rock-solid, isolated Docker environment with integrated internal DNS.
+
+* **Networking:** Define a custom bridge network (`lakehouse-net`) in Docker Compose.
+* **Services - Message Broker:** Confluent Kafka (Port 9092) & Zookeeper (Port 2181).
+* **Services - Storage:** MinIO (Port 9000/9001). Pre-create buckets: `bronze`, `silver`, `gold`, `checkpoints`, `raw_batch`.
+* **Services - Metadata Layer:** PostgreSQL (Port 5432) acting as the backend for the Apache Hive Metastore (Port 9083).
+* **Services - Serving Layer:** Trino (Port 8080) pre-configured with the Delta connector pointing to the HMS.
+
+### Phase 2: Dynamic Multi-Source Ingestion (Weeks 2-3)
+**Goal:** Capture 24/7 high-velocity streams for the Top 50 most active coins and historical batch data.
+
+* **Dynamic Streaming Ingestion - Step 1 (Fetch Top 50):** On startup, call the Binance REST API (`/api/v3/ticker/24hr`), sort all pairs by `quoteVolume` descending, and slice the top 50 symbols.
+* **Dynamic Streaming Ingestion - Step 2 (Construct Stream URL):** Dynamically build the combined WebSocket URL (e.g., `wss://stream.binance.com:9443/stream?streams=btcusdt@trade/ethusdt@trade/...`).
+* **Dynamic Streaming Ingestion - Step 3 (Publish):** Serialize tick data into UTF-8 JSON and push to Kafka topic `crypto_trades_raw`. Implement `tenacity` for auto-reconnect logic.
+* **Batch Ingestion (Python REST Pull):** Fetch historical 1-minute klines (OHLCV) for the same dynamically selected Top 50 coins. Save as raw CSV files into `s3a://raw_batch/history/`.
+
+### Phase 3: Spark Processing & Delta Lake Partitioning (Weeks 4-5)
+**Goal:** Transform streaming data into structured, partitioned Delta tables with ACID guarantees.
+
+* **Bronze Layer (Raw Storage):** Run a PySpark Structured Streaming job. Read from Kafka, append directly to `s3a://bronze/crypto_trades/` in `delta` format.
+* **Bronze Layer - Crucial Config:** Use `.option("mergeSchema", "true")` to handle JSON mutations and `.partitionBy("symbol")` to physically isolate each coin's data on MinIO.
+* **Silver Layer (Cleansing):** Spark batch job: Deduplicate raw trades based on Binance's unique Trade ID. Cast data types appropriately.
+* **Gold Layer (Business Aggregations):** Spark job: Calculate tumbling windows (1-min and 5-min intervals) to generate moving averages and OHLCV aggregates. Write to `s3a://gold/market_summary/`, ensuring `.partitionBy("symbol")` is maintained.
+
+### Phase 4: Orchestration & Storage Optimization (Week 6)
+**Goal:** Automate pipelines and resolve Lakehouse performance bottlenecks.
+
+* **Airflow Orchestration:** Use Apache Airflow to schedule the Silver and Gold batch transformations.
+* **Delta Compaction:** Create a daily Spark job running `spark.sql("OPTIMIZE delta.s3a://bronze/crypto_trades")`. This merges tiny streaming files into 128MB/256MB Parquet blocks.
+* **Trino Configuration:** Ensure `catalog/delta.properties` correctly references the Hive Metastore URI so Trino can interpret the Delta transaction logs and partitioned directories.
+
+### Phase 5: Consumption & Academic Documentation (Week 7)
+**Goal:** Deliver real-time BI visualizations and satisfy all university grading criteria.
+
+* **Power BI:** Connect to `localhost:8080` via the Trino ODBC driver. Create a "Live Ticker" dashboard (DirectQuery, auto-refresh every 5 seconds) pointing to the Gold layer. The `WHERE symbol = 'BTCUSDT'` clause will heavily benefit from the partitioning setup in Phase 3.
+* **Final Report (.docx):** Document the 5-layer Lakehouse mapping, showcase the architecture diagram, highlight the Small Files solution (Compaction), and explain the Partitioning strategy.
+
+---
+
+## III. Team Division of Labor (4 Members)
+
+| Role | Core Responsibilities | Timeline | Risk Mitigation Focus |
+| :--- | :--- | :--- | :--- |
+| **Dev1 (Ingestion)** | Python Dynamic Top 50 WS/REST Producers | Weeks 2-3 | WebSocket reconnect logic & API rate limits |
+| **Dev2 (Spark/Data)** | PySpark Streaming, Partitioning logic, Windowing | Weeks 4-5 | Exactly-once checkpointing & Partition sizing |
+| **Dev3 (Infra/Orch)** | Docker compose, Trino/HMS setup, Airflow | Weeks 1, 6 | Network routing, Delta compaction scheduling |
+| **Dev4 (BI/Docs)** | Power BI Dashboards, SQL querying, Final Report | Week 7 | DirectQuery performance & Pruning validation |
+| **Project Manager** | Architecture validation, Code reviews, Integration | All Weeks | End-to-end data flow consistency |
