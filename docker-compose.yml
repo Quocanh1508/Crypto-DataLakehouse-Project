@@ -185,6 +185,7 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json
     volumes:
       - "${APPDATA}/gcloud:/home/spark/.config/gcloud:ro"
+      - "./processing:/processing"
     ports:
       - "7077:7077"
       - "8082:8080"   # Spark Web UI (8080 is taken by Trino)
@@ -206,6 +207,7 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json
     volumes:
       - "${APPDATA}/gcloud:/home/spark/.config/gcloud:ro"
+      - "./processing:/processing"
     networks:
       - lakehouse-net
 

@@ -50,7 +50,7 @@ This project implements a **production-grade Data Lakehouse** for real-time cryp
 | Mode | Source | Target | Frequency |
 |---|---|---|---|
 | **Stream** | Binance WebSocket (`@trade`) | Kafka → Bronze (Delta) | Tick-by-tick, real-time |
-| **Batch** | Binance REST `/api/v3/klines` | MinIO `raw-batch/` | On-demand / scheduled |
+| **Batch** | Binance REST `/api/v3/klines` | GCS `raw-batch/` | On-demand / scheduled |
 
 Data flows through a three-tier **Medallion Architecture**:
 
@@ -94,11 +94,11 @@ Data flows through a three-tier **Medallion Architecture**:
                    │ (Write: Delta Format, partitionBy("symbol"))      │
                    ▼                                                   │
  ┌──────────────────────────────────────────────────┐                  │ (Metadata Sync)
- │ MinIO OBJECT STORAGE (S3-Compatible)             │                  ▼
- │ - Buckets: bronze/, silver/, gold/, checkpoints/ │◄───────┐ ┌───────────────┐
+ │ GOOGLE CLOUD STORAGE (GCS)                       │                  ▼
+ │ gs://crypto-lakehouse-group8/{bronze,silver,gold}│◄───────┐ ┌───────────────┐
  └──────────────────────────────────────────────────┘        │ │ HIVE METASTORE│
-                   ▲                                         │ └───────┬───────┘
-                   │ (Read: S3A Protocol)                    │         │ (Store Schema)
+                    ▲                                         │ └───────┬───────┘
+                    │ (Read: gs:// Protocol / ADC Auth)       │         │ (Store Schema)
 ═══════════════════│═════════════════════════════════════════│═════════▼═════════════════════
                    │                                         │  ┌────────────┐
 [SERVING LAYER]    │                                         └──┤ POSTGRESQL │
@@ -110,13 +110,15 @@ Data flows through a three-tier **Medallion Architecture**:
                    │
 ═══════════════════│═════════════════════════════════════════════════════════════════════════
                    │
-[CONSUMPTION]      │ (DirectQuery / ODBC)               [ORCHESTRATION - Phase 4]
+[CONSUMPTION & MONITORING] (DirectQuery / ODBC)      [ORCHESTRATION - Phase 4]
                    ▼                                           
  ┌──────────────────────────────────┐                   ┌──────────────────────────────┐
  │ POWER BI                         │                   │ APACHE AIRFLOW               │
  │ (Live Ticker Dashboard, Top 50)  │                   │ - Schedule Silver/Gold Jobs  │
- └──────────────────────────────────┘                   │ - Schedule Delta COMPACTION  │
-                                                        └──────────────────────────────┘
+ ├──────────────────────────────────┤                   │ - Schedule Delta COMPACTION  │
+ │ GRAFANA / PROMETHEUS / GCS LOGS  │                   └──────────────────────────────┘
+ │ (Kafka Lag, Spark JVM, GCS I/O)  │
+ └──────────────────────────────────┘
 ```
 
 ---
@@ -127,7 +129,7 @@ Data flows through a three-tier **Medallion Architecture**:
 |---|---|---|---|
 | **Message Broker** | Apache Kafka (Confluent) | 7.5.0 | Real-time trade tick streaming |
 | **Coordination** | Apache ZooKeeper | 7.5.0 | Kafka cluster management |
-| **Object Storage** | MinIO | 2025-09-07T16-13-09Z | S3-compatible data lake storage |
+| **Object Storage** | Google Cloud Storage | Cloud | Fully managed cloud data lake |
 | **Processing** | Apache Spark | 3.5.8 | Streaming & batch ETL engine |
 | **Table Format** | Delta Lake | 3.x | ACID transactions on object storage |
 | **Metastore** | Hive Metastore (Starburst) | 3.1.2-e.18 | Table schema & metadata catalog |
@@ -145,7 +147,7 @@ Data flows through a three-tier **Medallion Architecture**:
 ```
 FinalProject/
 │
-├── 📄 docker-compose.yml           # Full stack: Kafka, MinIO, Spark, Trino, HMS, PG
+├── 📄 docker-compose.yml           # Full stack: Kafka, Spark, Trino, HMS, PG
 ├── 📄 .env.example                 # Environment variable template → copy to .env
 ├── 📄 .gitignore                   # Excludes data dirs, venvs, secrets
 │
@@ -154,26 +156,31 @@ FinalProject/
 │   │                               #   · Auto-reconnect via tenacity (exp. backoff)
 │   │                               #   · Dead-letter queue for malformed ticks
 │   │                               #   · rel dispatcher for WebSocket heartbeats
-│   ├── producer_batch.py           # Historical 1m klines (REST) → MinIO raw-batch
-│   │                               #   · Respects Binance rate-limit (1200 weight/min)
-│   │                               #   · Stores as CSV: raw-batch/history/<SYM>/<DATE>/
-│   └── requirements.txt            # kafka-python, websocket-client, boto3, tenacity…
+│   └── requirements.txt            # kafka-python, websocket-client, tenacity…
 │
 ├── 📂 spark/                       # Custom Spark image
-│   ├── Dockerfile                  # Spark 3.5.8 with Delta Lake + S3A connectors
-│   └── start-spark.sh              # Entrypoint for master / worker roles
+│   ├── Dockerfile                  # Spark 3.5.8 + Delta Lake 3.2.1 + GCS Connector
+│   └── start-spark.sh              # Entrypoint for master / worker roles (LF-safe)
 │
 ├── 📂 trino/
 │   └── catalog/
 │       └── delta.properties        # Trino → Delta Lake connector config (via HMS)
 │
 ├── 📂 hive/
-│   └── hive-site.xml               # HMS config: JDBC → PostgreSQL, S3A → MinIO
+│   └── hive-site.xml               # HMS config: JDBC → PostgreSQL
 │
-├── 📂 processing/                  # Phase 3: Spark ETL jobs (Bronze → Silver → Gold)
-│   └── (coming soon)
+├── 📂 processing/                  # Phase 3: Spark ETL jobs ✅ COMPLETE
+│   ├── bronze_streaming.py         # Structured streaming: Kafka → Bronze (GCS Delta)
+│   ├── bronze_to_silver.py         # Batch: Bronze → Silver (dedupe, type cast)
+│   └── requirements.txt            # pyspark, delta-spark, kafka-python
 │
-└── 📂 orchestration/               # Phase 4: Airflow DAGs
+├── 📂 tests/                       # Pipeline validation suite ✅ COMPLETE
+│   └── validate_pipeline.py        # Data integrity, latency, precision, dedup tests
+│
+├── 📂 cloud/                       # GCP provisioning scripts
+│   └── gcs_setup.ps1               # Bucket + IAM setup for GCS
+│
+└── 📂 orchestration/               # Phase 4: Airflow DAGs (TODO)
     └── dags/
         └── (coming soon)
 ```
@@ -206,7 +213,7 @@ Binance REST /api/v3/klines
   │  Top-50 USDT pairs · 1000 candles each · 1-minute interval
   │  Rate-limit budget: 1100 weight / 1200 max
   │
-  └─ MinIO: s3a://raw-batch/history/<SYMBOL>/<DATE>/klines.csv
+  └─ GCS: gs://crypto-lakehouse-group8/raw-batch/<SYMBOL>/<DATE>/klines.csv
 
 Spark Batch Job
   └─ raw-batch → Bronze → Silver → Gold (same medallion path)
@@ -220,23 +227,21 @@ Spark Batch Job
 |---|---|---|---|---|
 | **ZooKeeper** | `zookeeper` | 2181 | 512 MB | Kafka coordination |
 | **Kafka** | `kafka` | 9092 (host), 29092 (internal) | 1 GB | Auto topic creation enabled |
-| **MinIO** | `minio` | 9000 (S3 API), 9001 (UI) | 512 MB | S3-compatible object store |
-| **MinIO Client** | `mc` | — | 128 MB | Auto-creates 5 buckets on startup |
+| **Kafka Connect** | `kafka-connect` | 8083 | 1 GB | HTTP source connector |
 | **PostgreSQL** | `postgres` | 5432 | 512 MB | Hive Metastore backend |
 | **Hive Metastore** | `hive-metastore` | 9083 | 512 MB | Table catalog for Trino + Spark |
 | **Trino** | `trino` | 8080 | 2 GB | Federated SQL query engine |
 | **Spark Master** | `spark-master` | 7077, 8082 (UI) | 1 GB | Cluster manager |
 | **Spark Worker** | `spark-worker` | — | 2 GB | 2 cores, 1.5 GB executor memory |
 
-**5 MinIO Buckets auto-created on startup:**
+**Google Cloud Storage (GCS) Paths:**
 
-| Bucket | Purpose |
+| Path | Purpose |
 |---|---|
-| `bronze` | Raw Delta Lake tables (streaming) |
-| `silver` | Cleaned & deduplicated Delta tables |
-| `gold` | OHLCV aggregations & business metrics |
-| `checkpoints` | Spark Structured Streaming checkpoints |
-| `raw-batch` | Historical CSV files from REST API |
+| `gs://crypto-lakehouse-group8/bronze` | Raw Delta Lake tables (streaming) |
+| `gs://crypto-lakehouse-group8/silver` | Cleaned & deduplicated Delta tables |
+| `gs://crypto-lakehouse-group8/gold` | OHLCV aggregations & business metrics |
+| `gs://crypto-lakehouse-group8/checkpoints` | Spark Structured Streaming checkpoints |
 
 ---
 
@@ -343,16 +348,23 @@ docker exec -it kafka kafka-console-consumer \
 
 ---
 
-### Phase 3 – Spark Processing
+### Phase 3 – Spark Processing ✅ COMPLETE
 
-> 🔧 **In Development** — Spark jobs for Bronze → Silver → Gold transformation.
+> ✅ **Validated** — Bronze streaming and Silver upserts running on Spark 3.5.8 → GCS Delta Lake.
 
 ```bash
-# Submit a Spark job to the cluster (example)
-docker exec spark-master spark-submit \
-  --master spark://spark-master:7077 \
-  --packages io.delta:delta-spark_2.12:3.1.0 \
-  /opt/spark/jobs/bronze_to_silver.py
+# Run Bronze streaming job (Kafka → GCS Delta)
+docker run --rm --network finalproject_lakehouse-net \
+  -v "${PWD}/processing:/processing" \
+  -v "${env:APPDATA}\gcloud:/home/spark/.config/gcloud:ro" \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json \
+  -e KAFKA_BOOTSTRAP_SERVERS=kafka:29092 \
+  finalproject-spark-master:latest \
+  spark-submit \
+    --packages io.delta:delta-spark_2.12:3.2.1,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4 \
+    --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension \
+    --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog \
+    /processing/bronze_streaming.py
 ```
 
 ---
@@ -400,13 +412,14 @@ All secrets and configuration are managed via `.env` (copy from `.env.example`):
 
 ## 🗺 Roadmap
 
-- [x] **Phase 1** — Dockerized infrastructure (Kafka, MinIO, Spark, Trino, HMS, PostgreSQL)
-- [x] **Phase 2** — Real-time WebSocket producer + Batch REST producer
-- [ ] **Phase 3** — Spark Structured Streaming jobs (Bronze → Silver → Gold)
-- [ ] **Phase 4** — Apache Airflow DAG orchestration (scheduled batch backfills)
-- [ ] **Phase 5** — Power BI dashboards connected to Trino
-- [ ] **Phase 6** — dbt data quality models on Gold layer
-- [ ] **Phase 7** — Alerting & monitoring (Grafana / Prometheus)
+- [x] **Phase 1** — Dockerized infrastructure (Kafka, Spark, Trino, HMS, PostgreSQL)
+- [x] **Phase 2** — Real-time WebSocket producer streaming to Kafka
+- [x] **Phase 3** — Spark 3.5.8: Bronze streaming + Silver upserts on GCS Delta Lake (validated ✅)
+- [ ] **Phase 4** — Gold Layer OHLCV aggregation (`silver_to_gold.py`)
+- [ ] **Phase 5** — Apache Airflow DAG orchestration (scheduled batch backfills)
+- [ ] **Phase 6** — Power BI / Trino dashboards for analytics consumption
+- [ ] **Phase 7** — dbt data quality models on Gold layer
+- [ ] **Phase 8** — Alerting & monitoring (Grafana / Prometheus / GCS Cloud Logging)
 
 ---
 
