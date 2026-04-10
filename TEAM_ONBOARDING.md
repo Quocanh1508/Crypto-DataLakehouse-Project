@@ -13,7 +13,7 @@ You need the `gcloud` CLI tool installed. Once installed, log in locally.
 gcloud auth login
 
 # 2. Set the default project
-gcloud config set project crypto-lakehouse-group8
+gcloud config set project DataLakeHouse-BDAN
 
 # 3. Generate the Application Default Credentials (ADC) Token
 gcloud auth application-default login
