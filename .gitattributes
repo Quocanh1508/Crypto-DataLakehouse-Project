@@ -1,0 +1,36 @@
+# .gitattributes
+# Enforce LF line endings for cross-platform compatibility (Docker/Linux)
+
+# Shell Scripts - ALWAYS LF
+*.sh eol=lf
+*.bash eol=lf
+
+# Dockerfiles - ALWAYS LF
+Dockerfile eol=lf
+Dockerfile.* eol=lf
+
+# Python files - ALWAYS LF
+*.py eol=lf
+
+# YAML/Config - ALWAYS LF
+*.yml eol=lf
+*.yaml eol=lf
+
+# XML Config - ALWAYS LF
+*.xml eol=lf
+
+# Properties - ALWAYS LF
+*.properties eol=lf
+
+# Windows batch files - ALWAYS CRLF (if any)
+*.bat eol=crlf
+*.cmd eol=crlf
+
+# Git configuration
+.gitattributes text
+.gitignore text
+
+# Documentation
+*.md text eol=lf
+*.MD text eol=lf
+README text eol=lf

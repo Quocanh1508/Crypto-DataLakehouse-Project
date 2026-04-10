@@ -34,9 +34,13 @@ RUN curl -sL \
   "https://repo1.maven.org/maven2/com/google/cloud/bigdataoss/gcs-connector/hadoop3-2.2.22/gcs-connector-hadoop3-2.2.22-shaded.jar" \
   -o /opt/spark/jars/gcs-connector-hadoop3-2.2.22-shaded.jar
 
+# Install dos2unix to fix Windows line endings (CRLF → LF)
+RUN apt-get update && apt-get install -y dos2unix && rm -rf /var/lib/apt/lists/*
+
 # Copy our custom startup script
 COPY start-spark.sh /
-RUN chmod +x /start-spark.sh
+# Convert CRLF to LF (fix Windows line ending issues)
+RUN dos2unix /start-spark.sh && chmod +x /start-spark.sh
 
 # The script decides whether to start master or worker based on $SPARK_ROLE
 ENTRYPOINT ["/start-spark.sh"]
