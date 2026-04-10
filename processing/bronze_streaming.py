@@ -41,7 +41,11 @@ logging.basicConfig(
 log = logging.getLogger("kafka_to_bronze")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-KAFKA_BOOTSTRAP  = os.getenv("KAFKA_BOOTSTRAP_SERVERS",  "localhost:9092")
+# NOTE: Default to Docker-internal address (kafka:29092) because this script
+# runs inside the Docker lakehouse-net via the Spark cluster.
+# If running directly on host (dev/debug), override with:
+#   export KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_BOOTSTRAP  = os.getenv("KAFKA_BOOTSTRAP_SERVERS",  "kafka:29092")
 KAFKA_TOPIC      = os.getenv("KAFKA_TOPIC_RAW",          "crypto_trades_raw")
 # DEFAULT to cluster URL — scripts must run distributed, not local
 SPARK_MASTER     = os.getenv("SPARK_MASTER_URL",          "spark://spark-master:7077")
