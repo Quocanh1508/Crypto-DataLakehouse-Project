@@ -43,6 +43,8 @@ log = logging.getLogger("kafka_to_bronze")
 # ── Config ────────────────────────────────────────────────────────────────────
 KAFKA_BOOTSTRAP  = os.getenv("KAFKA_BOOTSTRAP_SERVERS",  "localhost:9092")
 KAFKA_TOPIC      = os.getenv("KAFKA_TOPIC_RAW",          "crypto_trades_raw")
+# DEFAULT to cluster URL — scripts must run distributed, not local
+SPARK_MASTER     = os.getenv("SPARK_MASTER_URL",          "spark://spark-master:7077")
 
 BRONZE_PATH      = "gs://crypto-lakehouse-group8/bronze"
 CHECKPOINT_PATH  = "gs://crypto-lakehouse-group8/checkpoints/kafka_to_bronze"
@@ -70,10 +72,11 @@ def create_spark() -> SparkSession:
         "GOOGLE_APPLICATION_CREDENTIALS",
         "/home/spark/.config/gcloud/application_default_credentials.json"
     )
+    log.info("Connecting to Spark Master: %s", SPARK_MASTER)
     return (
         SparkSession.builder
         .appName("KafkaToBronze")
-        .master("local[2]")
+        .master(SPARK_MASTER)
         .config("spark.sql.extensions",
                 "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog",

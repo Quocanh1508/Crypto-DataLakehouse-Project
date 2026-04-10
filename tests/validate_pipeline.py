@@ -25,6 +25,8 @@ log = logging.getLogger("validator")
 # Config
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 TOPIC           = os.getenv("KAFKA_TOPIC_RAW", "crypto_trades_raw")
+# DEFAULT to cluster URL — scripts must run distributed, not local
+SPARK_MASTER    = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
 BRONZE_PATH     = "gs://crypto-lakehouse-group8/bronze"
 SILVER_PATH     = "gs://crypto-lakehouse-group8/silver"
 
@@ -35,10 +37,11 @@ def create_spark() -> SparkSession:
         "GOOGLE_APPLICATION_CREDENTIALS",
         "/home/spark/.config/gcloud/application_default_credentials.json"
     )
+    log.info("Connecting to Spark Master: %s", SPARK_MASTER)
     builder = (
         SparkSession.builder
-        .appName("PipelineValidator")
-        .master("local[*]")
+        .appName("PipelineValidator")  # shows up on Spark UI
+        .master(SPARK_MASTER)
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         # GCS Connector Auth (Nuclear approach)

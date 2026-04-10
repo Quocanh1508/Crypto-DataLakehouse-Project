@@ -63,6 +63,8 @@ log = logging.getLogger("bronze_to_silver")
 BRONZE_PATH      = "gs://crypto-lakehouse-group8/bronze"
 SILVER_PATH      = "gs://crypto-lakehouse-group8/silver"
 QUARANTINE_PATH  = "gs://crypto-lakehouse-group8/silver/quarantine"
+# DEFAULT to cluster URL — scripts must run distributed, not local
+SPARK_MASTER     = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
 
 # DecimalType(38, 18): 38 total digits, 18 after decimal point.
 # This matches the precision used in SQL financial systems and avoids
@@ -73,12 +75,12 @@ PRICE_DECIMAL = DecimalType(38, 18)
 
 # ── SparkSession ──────────────────────────────────────────────────────────────
 def create_spark() -> SparkSession:
-    """Create a SparkSession configured for local run with Delta Lake + MinIO."""
-    log.info("Initialising SparkSession (local mode)…")
+    """Create a SparkSession configured for cluster run with Delta Lake + GCS."""
+    log.info("Connecting to Spark Master: %s", SPARK_MASTER)
     spark = (
         SparkSession.builder
         .appName("BronzeToSilver")
-        .master("local[*]")
+        .master(SPARK_MASTER)
         # ── Delta Lake extension ───────────────────────────────────────────
         .config("spark.sql.extensions",
                 "io.delta.sql.DeltaSparkSessionExtension")
@@ -91,14 +93,16 @@ def create_spark() -> SparkSession:
         .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
         # Delta Atomicity on GCS
         .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
-        # ── Performance tuning for local single-machine run ────────────────
-        .config("spark.driver.memory",   "2g")
-        .config("spark.executor.memory", "2g")
-        .config("spark.sql.shuffle.partitions", "4")  # small for local
+        # ── Performance tuning for cluster mode ────────────────────────────
+        .config("spark.driver.memory",   "1g")
+        .config("spark.executor.memory", "1500m")  # match worker mem_limit
+        .config("spark.executor.cores",  "2")       # match worker cores
+        .config("spark.sql.shuffle.partitions", "8")  # 4 cores total in cluster
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
-    log.info("SparkSession ready — version %s", spark.version)
+    log.info("SparkSession ready — version %s | master: %s",
+             spark.version, spark.sparkContext.master)
     return spark
 
 
