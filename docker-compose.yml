@@ -211,6 +211,62 @@ services:
     networks:
       - lakehouse-net
 
+  # ── Workflow Orchestration (Airflow) ──────────────────────────────────────────
+  airflow-webserver:
+    image: apache/airflow:2.8.1-python3.10
+    container_name: airflow-webserver
+    mem_limit: 1g
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8888:8080"
+    environment:
+      AIRFLOW__CORE__DAGS_FOLDER: /home/airflow/dags
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql://hive:hivepassword@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS: "false"
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW_HOME: /home/airflow
+    volumes:
+      - ./dags:/home/airflow/dags
+      - ./airflow_logs:/home/airflow/logs
+      - ./processing:/home/airflow/processing
+      - "${APPDATA}/gcloud:/home/airflow/.config/gcloud:ro"
+    command: >
+      bash -c "
+      airflow db migrate &&
+      airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com 2>/dev/null || true &&
+      airflow webserver
+      "
+    networks:
+      - lakehouse-net
+
+  airflow-scheduler:
+    image: apache/airflow:2.8.1-python3.10
+    container_name: airflow-scheduler
+    mem_limit: 512m
+    depends_on:
+      - postgres
+      - airflow-webserver
+    environment:
+      AIRFLOW__CORE__DAGS_FOLDER: /home/airflow/dags
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql://hive:hivepassword@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS: "false"
+      AIRFLOW_HOME: /home/airflow
+    volumes:
+      - ./dags:/home/airflow/dags
+      - ./airflow_logs:/home/airflow/logs
+      - ./processing:/home/airflow/processing
+      - "${APPDATA}/gcloud:/home/airflow/.config/gcloud:ro"
+    command: airflow scheduler
+    networks:
+      - lakehouse-net
+
 networks:
   lakehouse-net:
     driver: bridge
