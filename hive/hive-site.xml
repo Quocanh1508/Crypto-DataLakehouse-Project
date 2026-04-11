@@ -1,7 +1,15 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  Reference HMS configuration for GCS + PostgreSQL (local/dev).
+  The Starburst image in docker-compose generates hive-site.xml from env at
+  container start; this file documents the same settings for tools that read
+  hive-site.xml from the repo.
+
+  Mounting this file over the image template is NOT recommended for Starburst:
+  the entrypoint sed-fills %PLACEHOLDERS% into the template.
+-->
 <configuration>
 
-  <!-- ── Metastore DB (PostgreSQL) ─────────────────────────── -->
   <property>
     <name>javax.jdo.option.ConnectionURL</name>
     <value>jdbc:postgresql://postgres:5432/metastore</value>
@@ -19,7 +27,6 @@
     <value>hivepassword</value>
   </property>
 
-  <!-- ── Metastore service ──────────────────────────────────── -->
   <property>
     <name>hive.metastore.uris</name>
     <value>thrift://hive-metastore:9083</value>
@@ -33,34 +40,22 @@
     <value>true</value>
   </property>
 
-  <!-- ── MinIO (S3-compatible) ─────────────────────────────── -->
-  <property>
-    <name>fs.s3a.endpoint</name>
-    <value>http://minio:9000</value>
-  </property>
-  <property>
-    <name>fs.s3a.access.key</name>
-    <value>admin</value>
-  </property>
-  <property>
-    <name>fs.s3a.secret.key</name>
-    <value>admin123</value>
-  </property>
-  <property>
-    <name>fs.s3a.path.style.access</name>
-    <value>true</value>
-  </property>
-  <property>
-    <name>fs.s3a.impl</name>
-    <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
-  </property>
-  <property>
-    <name>fs.s3a.connection.ssl.enabled</name>
-    <value>false</value>
-  </property>
   <property>
     <name>hive.metastore.warehouse.dir</name>
-    <value>s3a://bronze/</value>
+    <value>gs://crypto-lakehouse-group8/bronze/</value>
+  </property>
+
+  <property>
+    <name>fs.gs.impl</name>
+    <value>com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem</value>
+  </property>
+  <property>
+    <name>fs.AbstractFileSystem.gs.impl</name>
+    <value>com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS</value>
+  </property>
+  <property>
+    <name>fs.gs.auth.service.account.json.keyfile</name>
+    <value>/etc/gcp/sa.json</value>
   </property>
 
 </configuration>

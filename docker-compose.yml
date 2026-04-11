@@ -22,8 +22,6 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      # PLAINTEXT  → for internal Docker-to-Docker communication
-      # PLAINTEXT_HOST → for host machine (localhost:9092)
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
@@ -69,51 +67,7 @@ services:
     networks:
       - lakehouse-net
 
-  # ── Object Storage (MinIO) ────────────────────────────────────────────────────
-  minio:
-    image: minio/minio:latest
-    container_name: minio
-    mem_limit: 512m
-    ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Web Console
-    environment:
-      MINIO_ROOT_USER: admin          # use ROOT_USER (MINIO_ACCESS_KEY is deprecated)
-      MINIO_ROOT_PASSWORD: admin123
-    command: server /data --console-address ":9001"
-    volumes:
-      - ./minio_data:/data
-    networks:
-      - lakehouse-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  # mc: one-shot container to create buckets after MinIO is ready
-  mc:
-    image: minio/mc:latest
-    container_name: mc
-    mem_limit: 128m
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      /usr/bin/mc alias set myminio http://minio:9000 admin admin123;
-      /usr/bin/mc mb --ignore-existing myminio/bronze;
-      /usr/bin/mc mb --ignore-existing myminio/silver;
-      /usr/bin/mc mb --ignore-existing myminio/gold;
-      /usr/bin/mc mb --ignore-existing myminio/checkpoints;
-      /usr/bin/mc mb --ignore-existing myminio/raw-batch;
-      echo '✅ All 5 buckets created.';
-      exit 0;
-      "
-    networks:
-      - lakehouse-net
-
-  # ── Metadata Layer (PostgreSQL + Hive Metastore) ──────────────────────────────
+  # ── Metadata Layer (PostgreSQL + Hive Metastore → GCS warehouse) ─────────────
   postgres:
     image: postgres:15-alpine
     container_name: postgres
@@ -135,13 +89,13 @@ services:
       retries: 10
 
   hive-metastore:
-    image: starburstdata/hive:3.1.2-e.18   # well-tested image for Trino + Delta Lake
+    build:
+      context: ./hive-metastore
+    image: local/hive-metastore-gcs:3.1.2-e.18
     container_name: hive-metastore
     mem_limit: 512m
     depends_on:
       postgres:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     ports:
       - "9083:9083"
@@ -150,13 +104,28 @@ services:
       HIVE_METASTORE_JDBC_URL: jdbc:postgresql://postgres:5432/metastore
       HIVE_METASTORE_USER: hive
       HIVE_METASTORE_PASSWORD: hivepassword
-      HIVE_METASTORE_WAREHOUSE_DIR: s3a://bronze/
-      S3_ENDPOINT: http://minio:9000
-      S3_ACCESS_KEY: admin
-      S3_SECRET_KEY: admin123
+      HIVE_METASTORE_WAREHOUSE_DIR: ${HIVE_METASTORE_WAREHOUSE_DIR:-gs://crypto-lakehouse-group8/bronze/}
+      # Starburst entrypoint requires S3 env vars even when warehouse is gs://; values are unused.
+      S3_ENDPOINT: http://127.0.0.1:1
+      S3_ACCESS_KEY: unused
+      S3_SECRET_KEY: unused
       S3_PATH_STYLE_ACCESS: "true"
-      REGION: us-east-1
-      GOOGLE_CLOUD_KEY_FILE_PATH: ""
+      REGION: ${GCP_REGION:-us-east-1}
+      GOOGLE_CLOUD_KEY_FILE_PATH: /etc/gcp/sa.json
+      AZURE_ADL_CLIENT_ID: ${AZURE_ADL_CLIENT_ID:-disabled}
+      AZURE_ADL_CREDENTIAL: ${AZURE_ADL_CREDENTIAL:-disabled}
+      AZURE_ADL_REFRESH_URL: ${AZURE_ADL_REFRESH_URL:-disabled}
+      AZURE_ABFS_STORAGE_ACCOUNT: ${AZURE_ABFS_STORAGE_ACCOUNT:-disabled}
+      AZURE_ABFS_ACCESS_KEY: ${AZURE_ABFS_ACCESS_KEY:-disabled}
+      AZURE_WASB_STORAGE_ACCOUNT: ${AZURE_WASB_STORAGE_ACCOUNT:-disabled}
+      AZURE_ABFS_OAUTH: ${AZURE_ABFS_OAUTH:-disabled}
+      AZURE_ABFS_OAUTH_TOKEN_PROVIDER: ${AZURE_ABFS_OAUTH_TOKEN_PROVIDER:-disabled}
+      AZURE_ABFS_OAUTH_CLIENT_ID: ${AZURE_ABFS_OAUTH_CLIENT_ID:-disabled}
+      AZURE_ABFS_OAUTH_SECRET: ${AZURE_ABFS_OAUTH_SECRET:-disabled}
+      AZURE_ABFS_OAUTH_ENDPOINT: ${AZURE_ABFS_OAUTH_ENDPOINT:-disabled}
+      AZURE_WASB_ACCESS_KEY: ${AZURE_WASB_ACCESS_KEY:-disabled}
+    volumes:
+      - ${GCP_SERVICE_ACCOUNT_KEY:?Set GCP_SERVICE_ACCOUNT_KEY to your service account JSON path}:/etc/gcp/sa.json:ro
     networks:
       - lakehouse-net
 
@@ -171,6 +140,7 @@ services:
       - "8080:8080"
     volumes:
       - ./trino/catalog:/etc/trino/catalog
+      - ${GCP_SERVICE_ACCOUNT_KEY:?Set GCP_SERVICE_ACCOUNT_KEY to your service account JSON path}:/etc/gcp/sa.json:ro
     networks:
       - lakehouse-net
 
@@ -188,7 +158,8 @@ services:
       - "./processing:/processing"
     ports:
       - "7077:7077"
-      - "8082:8080"   # Spark Web UI (8080 is taken by Trino)
+      - "8082:8080"
+      - "9108:9108"
     networks:
       - lakehouse-net
 
@@ -208,6 +179,56 @@ services:
     volumes:
       - "${APPDATA}/gcloud:/home/spark/.config/gcloud:ro"
       - "./processing:/processing"
+    ports:
+      - "9109:9108"
+    networks:
+      - lakehouse-net
+
+  # ── Monitoring ────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: prometheus
+    mem_limit: 512m
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    networks:
+      - lakehouse-net
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: grafana
+    mem_limit: 512m
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - lakehouse-net
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: kafka-exporter
+    mem_limit: 128m
+    command:
+      - --kafka.server=kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "9308:9308"
     networks:
       - lakehouse-net
 

@@ -34,6 +34,12 @@ RUN curl -sL \
   "https://repo1.maven.org/maven2/com/google/cloud/bigdataoss/gcs-connector/hadoop3-2.2.22/gcs-connector-hadoop3-2.2.22-shaded.jar" \
   -o /opt/spark/jars/gcs-connector-hadoop3-2.2.22-shaded.jar
 
+RUN curl -sL \
+  "https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/0.20.0/jmx_prometheus_javaagent-0.20.0.jar" \
+  -o /opt/spark/jars/jmx_prometheus_javaagent-0.20.0.jar
+
+COPY jmx-prometheus.yaml /opt/spark/conf/jmx-prometheus.yaml
+
 # Install dos2unix to fix Windows line endings (CRLF → LF)
 RUN apt-get update && apt-get install -y dos2unix && rm -rf /var/lib/apt/lists/*
 
