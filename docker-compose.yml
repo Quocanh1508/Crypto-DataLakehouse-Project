@@ -113,7 +113,7 @@ services:
     networks:
       - lakehouse-net
 
-  # ── Metadata Layer (PostgreSQL + Hive Metastore) ──────────────────────────────
+  # ── Metadata Layer (PostgreSQL + Hive Metastore + Airflow) ─────────────────────
   postgres:
     image: postgres:15-alpine
     container_name: postgres
@@ -126,6 +126,7 @@ services:
       - "5432:5432"
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/01-init.sql
     networks:
       - lakehouse-net
     healthcheck:
@@ -224,23 +225,19 @@ services:
     environment:
       AIRFLOW__CORE__DAGS_FOLDER: /home/airflow/dags
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql://hive:hivepassword@postgres:5432/airflow
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql://airflow:airflow@postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS: "false"
       AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW__WEBSERVER__RBAC: "true"
       AIRFLOW_HOME: /home/airflow
     volumes:
       - ./dags:/home/airflow/dags
       - ./airflow_logs:/home/airflow/logs
       - ./processing:/home/airflow/processing
       - "${APPDATA}/gcloud:/home/airflow/.config/gcloud:ro"
-    command: >
-      bash -c "
-      airflow db migrate &&
-      airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com 2>/dev/null || true &&
-      airflow webserver
-      "
+    entrypoint: /bin/bash -c "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com 2>/dev/null || true && airflow webserver"
     networks:
       - lakehouse-net
 
@@ -249,12 +246,14 @@ services:
     container_name: airflow-scheduler
     mem_limit: 512m
     depends_on:
-      - postgres
-      - airflow-webserver
+      postgres:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_started
     environment:
       AIRFLOW__CORE__DAGS_FOLDER: /home/airflow/dags
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql://hive:hivepassword@postgres:5432/airflow
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql://airflow:airflow@postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS: "false"
       AIRFLOW_HOME: /home/airflow
