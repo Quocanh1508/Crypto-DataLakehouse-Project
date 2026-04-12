@@ -180,7 +180,7 @@ services:
     build:
       context: ./spark
     container_name: spark-master
-    mem_limit: 1g
+    mem_limit: 4g
     environment:
       - SPARK_ROLE=master
       - GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json
@@ -197,14 +197,14 @@ services:
     build:
       context: ./spark
     container_name: spark-worker
-    mem_limit: 2g
+    mem_limit: 4g
     depends_on:
       - spark-master
     environment:
       - SPARK_ROLE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_WORKER_MEMORY=1500M
-      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=3500M
+      - SPARK_WORKER_CORES=4
       - GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json
     volumes:
       - "${APPDATA}/gcloud:/home/spark/.config/gcloud:ro"
@@ -237,6 +237,7 @@ services:
       - ./airflow_logs:/home/airflow/logs
       - ./processing:/home/airflow/processing
       - "${APPDATA}/gcloud:/home/airflow/.config/gcloud:ro"
+      - /var/run/docker.sock:/var/run/docker.sock
     entrypoint: /bin/bash -c "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com 2>/dev/null || true && airflow webserver"
     networks:
       - lakehouse-net
@@ -262,6 +263,7 @@ services:
       - ./airflow_logs:/home/airflow/logs
       - ./processing:/home/airflow/processing
       - "${APPDATA}/gcloud:/home/airflow/.config/gcloud:ro"
+      - /var/run/docker.sock:/var/run/docker.sock
     command: airflow scheduler
     networks:
       - lakehouse-net
