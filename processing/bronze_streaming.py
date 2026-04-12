@@ -49,7 +49,8 @@ log = logging.getLogger("kafka_to_bronze")
 # runs inside the Docker lakehouse-net via the Spark cluster.
 # If running directly on host (dev/debug), override with:
 #   export KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-KAFKA_BOOTSTRAP  = os.getenv("KAFKA_BOOTSTRAP_SERVERS",  "kafka:29092")
+
+KAFKA_BOOTSTRAP  = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
 KAFKA_TOPIC      = os.getenv("KAFKA_TOPIC_RAW",          "crypto_trades_raw")
 # DEFAULT to cluster URL — scripts must run distributed, not local
 SPARK_MASTER     = os.getenv("SPARK_MASTER_URL",          "spark://spark-master:7077")
@@ -84,8 +85,18 @@ def create_spark() -> SparkSession:
                 "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        .config("spark.driver.memory",   "1g")
-        .config("spark.sql.shuffle.partitions", "4")
+        # ── GCS Connector Auth (ADC user credentials) ─────────────────────
+        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
+        .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
+        .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
+        .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", adc_path)
+        .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
+        # Delta atomicity on GCS + bypass Spark 4 TimeAdd bug
+        .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
+        .config("spark.databricks.delta.retentionDurationCheck.enabled", "false")
+        .config("spark.driver.memory",   "512m")
+        .config("spark.sql.shuffle.partitions", "2")
+        .getOrCreate()
     )
     # Auto-detect SA Key vs ADC — no hardcoded auth type needed
     builder = apply_gcs_auth(builder)
@@ -159,7 +170,9 @@ def main():
     )
 
     log.info("Streaming query started. Awaiting termination...")
-    query.awaitTermination()
+    # Bronze chạy 24/7 infinite - Spark tự động quản lý 2 cores này
+    # Silver/Gold sẽ dùng 2 cores khác khi cần
+    query.awaitTermination()  # Chạy mãi (không timeout)
 
 
 if __name__ == "__main__":
