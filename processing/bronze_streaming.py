@@ -85,24 +85,18 @@ def create_spark() -> SparkSession:
                 "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        # ── GCS Connector Auth (ADC user credentials) ─────────────────────
-        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
-        .config("spark.hadoop.fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
-        .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
-        .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", adc_path)
-        .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
-        # Delta atomicity on GCS + bypass Spark 4 TimeAdd bug
+        # Delta atomicity on GCS
         .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
         .config("spark.databricks.delta.retentionDurationCheck.enabled", "false")
-        .config("spark.driver.memory",   "512m")
-        .config("spark.sql.shuffle.partitions", "2")
-        .getOrCreate()
+        .config("spark.driver.memory",   "1g")
+        .config("spark.sql.shuffle.partitions", "4")
     )
-    # Auto-detect SA Key vs ADC — no hardcoded auth type needed
+    # apply_gcs_auth auto-detects SA key or ADC and injects the right configs
     builder = apply_gcs_auth(builder)
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
     return spark
+
 
 
 def main():
