@@ -1,10 +1,10 @@
 """
 producer_stream.py
 ==================
-Dynamic Top-50 Binance WebSocket → Kafka Producer
+Dynamic Top-10 Binance WebSocket → Kafka Producer
 
 Steps:
-  1. Fetch /api/v3/ticker/24hr → sort by quoteVolume desc → take top 50
+  1. Fetch /api/v3/ticker/24hr → sort by quoteVolume desc → take top 10
   2. Build combined WebSocket URL
   3. Publish each trade tick to Kafka topic: crypto_trades_raw
   4. Route malformed messages to: crypto_trades_dlq (dead-letter queue)
@@ -34,7 +34,7 @@ TOPIC_RAW          = os.getenv("KAFKA_TOPIC_RAW", "crypto_trades_raw")
 TOPIC_DLQ          = os.getenv("KAFKA_TOPIC_DLQ", "crypto_trades_dlq")
 BINANCE_REST_URL   = os.getenv("BINANCE_REST_URL", "https://api.binance.com")
 BINANCE_WS_URL     = os.getenv("BINANCE_WS_URL", "wss://stream.binance.com:9443/stream")
-TOP_N              = int(os.getenv("TOP_N_COINS", "50"))
+TOP_N              = int(os.getenv("TOP_N_COINS", "10"))
 
 # Required fields to validate a trade tick
 REQUIRED_FIELDS = {"e", "E", "s", "t", "p", "q", "T", "m"}
