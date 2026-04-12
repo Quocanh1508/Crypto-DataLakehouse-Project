@@ -1,0 +1,7 @@
+# dbt generated artifacts — không cần commit
+target/
+dbt_packages/
+logs/
+
+# profiles.yml chứa credentials — KHÔNG BAO GIỜ commit
+profiles.yml

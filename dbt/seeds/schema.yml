@@ -1,0 +1,54 @@
+version: 2
+
+# =============================================================================
+# seeds/schema.yml
+# =============================================================================
+# Khai báo cấu trúc cho file seed mock_gold_ohlcv.csv.
+#
+# Seeds là file CSV được dbt load lên database (Trino) khi chạy "dbt seed".
+# Mục đích: cung cấp dữ liệu mẫu để phát triển và test dbt models khi
+# Teammate 1 chưa hoàn thành silver_to_gold.py.
+#
+# Sau khi Teammate 1 xong, seeds này không còn cần thiết cho production.
+# Nhưng vẫn giữ lại để:
+#   1. Chạy unit test dbt models mà không cần data pipeline thật
+#   2. Development/demo environment
+#   3. CI/CD pipeline test
+#
+# Xoá seed data khỏi Trino: dbt seed --full-refresh (regenerate)
+# Hoặc disconnect khi không cần: dbt seed --exclude mock_gold_ohlcv
+# =============================================================================
+
+seeds:
+  - name: mock_gold_ohlcv
+    description: >
+      Dữ liệu mẫu (mock) cho Gold OHLCV table. Được dùng để phát triển
+      dbt models khi silver_to_gold.py của Teammate 1 chưa hoàn thành.
+      Bao gồm: BTC, ETH, BNB (cặp giá lớn) và PEPE, SHIB (meme coin giá nhỏ)
+      để kiểm tra decimal precision.
+    config:
+      # Chỉ định schema cho seed (không dùng schema mặc định)
+      schema: default
+
+    columns:
+      - name: symbol
+        description: "Cặp giao dịch USDT."
+      - name: window_start
+        description: "Timestamp bắt đầu nến (UTC)."
+        tests:
+          - not_null
+      - name: window_minutes
+        description: "Độ dài nến: 1 hoặc 5."
+        tests:
+          - accepted_values:
+              values: [1, 5]
+      - name: open
+        tests: [not_null]
+      - name: high
+        tests: [not_null]
+      - name: low
+        tests: [not_null]
+      - name: close
+        tests: [not_null]
+      - name: volume
+        tests: [not_null]

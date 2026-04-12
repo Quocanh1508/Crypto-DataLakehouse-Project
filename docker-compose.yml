@@ -137,7 +137,7 @@ services:
   hive-metastore:
     image: starburstdata/hive:3.1.2-e.18   # well-tested image for Trino + Delta Lake
     container_name: hive-metastore
-    mem_limit: 512m
+    mem_limit: 1g                          # Java JVM needs >512m; OOM kill happens silently
     depends_on:
       postgres:
         condition: service_healthy
@@ -156,7 +156,11 @@ services:
       S3_SECRET_KEY: admin123
       S3_PATH_STYLE_ACCESS: "true"
       REGION: us-east-1
-      GOOGLE_CLOUD_KEY_FILE_PATH: ""
+      # /dev/null: always exists in Linux, satisfies `test -v` AND file-exists checks.
+      # The startup script gates GCS config on this var being set.
+      # With /dev/null the GCS block is entered but reads empty credentials -> skipped gracefully.
+      # Hive Metastore uses MinIO (S3) anyway, so no real GCS access is needed.
+      GOOGLE_CLOUD_KEY_FILE_PATH: /dev/null
     networks:
       - lakehouse-net
 

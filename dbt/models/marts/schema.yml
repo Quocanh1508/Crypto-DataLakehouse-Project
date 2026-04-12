@@ -1,0 +1,115 @@
+version: 2
+
+# =============================================================================
+# models/marts/schema.yml
+# =============================================================================
+# File này khai báo tests và mô tả cho mart models.
+#
+# Mart layer là "lớp cuối cùng" — dữ liệu đã được tính toán đầy đủ
+# và sẵn sàng cho Power BI tiêu thụ.
+#
+# Tests tại mart layer nghiêm ngặt hơn staging:
+#   - Kiểm tra thêm các cột derived (candle_direction, price_change_pct)
+#   - Đảm bảo tính nhất quán sau khi JOIN nhiều CTEs
+#   - Validate các business rule cuối cùng trước khi Power BI đọc
+# =============================================================================
+
+models:
+  - name: mart_crypto_dashboard
+    description: >
+      Final mart table dành cho Power BI dashboard "Live Crypto Ticker".
+      Chứa OHLCV từ Gold layer + các chỉ số phái sinh: VWAP lũy kế,
+      price_change_pct (% thay đổi so với nến trước), candle_direction.
+      Chỉ giữ 30 ngày gần nhất để tối ưu query performance.
+      Được ghi vào schema 'marts' trong Trino (materialized: table).
+
+    columns:
+
+      - name: symbol
+        description: "Cặp giao dịch Binance USDT."
+        tests:
+          - not_null
+
+      - name: window_start
+        description: "Timestamp bắt đầu của nến (UTC)."
+        tests:
+          - not_null
+
+      - name: window_end
+        description: "Timestamp kết thúc của nến = window_start + window_minutes."
+        tests:
+          - not_null
+
+      - name: window_minutes
+        description: "Độ dài nến: 1 hoặc 5 phút."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 5]
+
+      - name: trade_date
+        description: "DATE của window_start. Dùng cho partition pruning."
+        tests:
+          - not_null
+
+      - name: open
+        description: "Giá mở cửa."
+        tests:
+          - not_null
+
+      - name: high
+        description: "Giá cao nhất trong nến."
+        tests:
+          - not_null
+          # Test logic OHLC: high PHẢI >= low
+          # Fail nghĩa là dữ liệu Gold bị tính aggregate sai
+          - assert_high_gte_low:
+              column_high: high
+              column_low: low
+
+      - name: low
+        description: "Giá thấp nhất trong nến."
+        tests:
+          - not_null
+
+      - name: close
+        description: "Giá đóng cửa."
+        tests:
+          - not_null
+
+      - name: volume
+        description: "Tổng khối lượng giao dịch trong nến."
+        tests:
+          - not_null
+
+      - name: candle_direction
+        description: >
+          Nhãn xu hướng nến: 'BULLISH' (close >= open) hoặc 'BEARISH' (close < open).
+          Dùng trong Power BI cho conditional formatting màu.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['BULLISH', 'BEARISH']   # Chỉ 2 giá trị hợp lệ
+
+      - name: price_change_pct
+        description: >
+          Phần trăm thay đổi giá close so với nến liền trước:
+          (close - prev_close) / prev_close * 100.
+          NULL ở nến đầu tiên của mỗi symbol là hành vi đúng (không có "nến trước").
+          Giá trị dương = tăng giá, âm = giảm giá.
+
+      - name: vwap_cumulative
+        description: >
+          Volume Weighted Average Price lũy kế trong ngày.
+          Reset về 0 mỗi ngày mới.
+          Null có thể xảy ra nếu volume tổng = 0 trong ngày (rất hiếm).
+
+      - name: sma_5
+        description: >
+          Simple Moving Average 5 kỳ (tính tại Gold layer).
+          NULL cho 4 nến đầu tiên của mỗi symbol/timeframe.
+
+      - name: sma_20
+        description: >
+          Simple Moving Average 20 kỳ (tính tại Gold layer).
+          NULL cho 19 nến đầu tiên.

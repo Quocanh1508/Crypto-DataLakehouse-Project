@@ -1,0 +1,33 @@
+# =============================================================================
+# profiles_template.yml  (TEMPLATE ONLY - copy this to ~/.dbt/profiles.yml)
+# =============================================================================
+# File THAT CAN BE COPIED to:
+#   Windows : C:\Users\<YourUsername>\.dbt\profiles.yml
+#   Mac/Linux: ~/.dbt/profiles.yml
+#
+# IMPORTANT: Do NOT commit the real profiles.yml to Git.
+#
+# IMPORTANT: dbt-trino REQUIRES the 'user' field even with method: none.
+#            Without it, dbt debug will fail with:
+#            "'user' is a required property"
+# =============================================================================
+#
+# crypto_lakehouse:
+#   target: dev
+#   outputs:
+#
+#     dev:
+#       type: trino
+#       method: none        # no auth needed (local Trino without security)
+#       user: dbt_user      # REQUIRED - any non-empty string works
+#       host: localhost     # Trino exposes port 8080 from Docker
+#       port: 8080
+#       database: delta     # catalog name from trino/catalog/delta.properties
+#       schema: default     # default schema in Delta catalog
+#       threads: 4          # max parallel model executions
+#       http_scheme: http   # local Trino uses HTTP, not HTTPS
+#
+# After creating the file, verify connection with:
+#   cd dbt
+#   dbt debug
+# Expected output: "All checks passed!"
