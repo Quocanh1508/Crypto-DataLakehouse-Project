@@ -37,12 +37,17 @@ services:
       timeout: 10s
       retries: 10
 
+  # FIX #3: Kafka Connect now uses a dedicated Dockerfile with the plugin pre-installed.
+  # This eliminates the ~10 minute startup delay caused by downloading the plugin at runtime.
   kafka-connect:
-    image: confluentinc/cp-kafka-connect-base:7.5.0
+    build:
+      context: ./kafka-connect
+      dockerfile: Dockerfile
     container_name: kafka-connect
     mem_limit: 1g
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     ports:
       - "8083:8083"
     environment:
@@ -60,60 +65,41 @@ services:
       CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
       CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
       CONNECT_PLUGIN_PATH: '/usr/share/java,/usr/share/confluent-hub-components'
-    command:
-      - bash
-      - -c
-      - |
-        confluent-hub install --no-prompt confluentinc/kafka-connect-http:1.7.3
-        /etc/confluent/docker/run
     networks:
       - lakehouse-net
 
-  # ── Object Storage (MinIO) ────────────────────────────────────────────────────
-  minio:
-    image: minio/minio:latest
-    container_name: minio
-    mem_limit: 512m
-    ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Web Console
-    environment:
-      MINIO_ROOT_USER: admin          # use ROOT_USER (MINIO_ACCESS_KEY is deprecated)
-      MINIO_ROOT_PASSWORD: admin123
-    command: server /data --console-address ":9001"
-    volumes:
-      - ./minio_data:/data
-    networks:
-      - lakehouse-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  # mc: one-shot container to create buckets after MinIO is ready
-  mc:
-    image: minio/mc:latest
-    container_name: mc
-    mem_limit: 128m
+  # ── Ingestion: WebSocket Streaming Producer (24/7) ───────────────────────────
+  # Managed by Docker (not Airflow) because it's a long-running process.
+  # restart: always ensures it auto-recovers from crashes without human intervention.
+  producer-stream:
+    image: python:3.10-slim
+    container_name: producer-stream
+    mem_limit: 256m
+    restart: always
     depends_on:
-      minio:
+      kafka:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      /usr/bin/mc alias set myminio http://minio:9000 admin admin123;
-      /usr/bin/mc mb --ignore-existing myminio/bronze;
-      /usr/bin/mc mb --ignore-existing myminio/silver;
-      /usr/bin/mc mb --ignore-existing myminio/gold;
-      /usr/bin/mc mb --ignore-existing myminio/checkpoints;
-      /usr/bin/mc mb --ignore-existing myminio/raw-batch;
-      echo '✅ All 5 buckets created.';
-      exit 0;
-      "
+    working_dir: /app
+    volumes:
+      - ./ingestion:/app
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+      KAFKA_TOPIC_RAW: "crypto_trades_raw"
+      KAFKA_TOPIC_DLQ: "crypto_trades_dlq"
+      BINANCE_REST_URL: "https://api.binance.com"
+      BINANCE_WS_URL: "wss://stream.binance.com:9443/stream"
+      TOP_N_COINS: "10"
+    command: >
+      bash -c "pip install -q kafka-python requests websocket-client rel tenacity &&
+               python producer_stream.py"
     networks:
       - lakehouse-net
 
-  # ── Metadata Layer (PostgreSQL + Hive Metastore) ──────────────────────────────
+  # ── Metadata Layer (PostgreSQL + Hive Metastore) ─────────────────────────────
+  # FIX #4: init_postgres.sql already provisions TWO separate databases:
+  #   - metastore (owner: hive)   → for Hive Metastore
+  #   - airflow   (owner: airflow) → for Apache Airflow
+  # This prevents any schema collision between the two services.
   postgres:
     image: postgres:15-alpine
     container_name: postgres
@@ -126,6 +112,7 @@ services:
       - "5432:5432"
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/01-init.sql
     networks:
       - lakehouse-net
     healthcheck:
@@ -134,14 +121,14 @@ services:
       timeout: 5s
       retries: 10
 
+  # FIX #1: Hive Metastore now points to GCS (gs://) instead of MinIO (s3a://).
+  # MinIO dependency removed. GCS auth is handled via the mounted ADC credentials.
   hive-metastore:
     image: starburstdata/hive:3.1.2-e.18   # well-tested image for Trino + Delta Lake
     container_name: hive-metastore
-    mem_limit: 1g                          # Java JVM needs >512m; OOM kill happens silently
+    mem_limit: 512m
     depends_on:
       postgres:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     ports:
       - "9083:9083"
@@ -150,17 +137,11 @@ services:
       HIVE_METASTORE_JDBC_URL: jdbc:postgresql://postgres:5432/metastore
       HIVE_METASTORE_USER: hive
       HIVE_METASTORE_PASSWORD: hivepassword
-      HIVE_METASTORE_WAREHOUSE_DIR: s3a://bronze/
-      S3_ENDPOINT: http://minio:9000
-      S3_ACCESS_KEY: admin
-      S3_SECRET_KEY: admin123
-      S3_PATH_STYLE_ACCESS: "true"
-      REGION: us-east-1
-      # /dev/null: always exists in Linux, satisfies `test -v` AND file-exists checks.
-      # The startup script gates GCS config on this var being set.
-      # With /dev/null the GCS block is entered but reads empty credentials -> skipped gracefully.
-      # Hive Metastore uses MinIO (S3) anyway, so no real GCS access is needed.
-      GOOGLE_CLOUD_KEY_FILE_PATH: /dev/null
+      # FIX #1: Updated warehouse directory to point to Google Cloud Storage
+      HIVE_METASTORE_WAREHOUSE_DIR: gs://crypto-lakehouse-group8/
+      GOOGLE_CLOUD_KEY_FILE_PATH: /home/hive/.config/gcloud/application_default_credentials.json
+    volumes:
+      - "${APPDATA}/gcloud:/home/hive/.config/gcloud:ro"
     networks:
       - lakehouse-net
 
@@ -178,7 +159,9 @@ services:
     networks:
       - lakehouse-net
 
-  # ── Processing Engine (Spark 4.1.1 Custom) ────────────────────────────────────
+  # ── Processing Engine (Spark 3.5.8 Custom) ────────────────────────────────────
+  # FIX #2: Reduced mem_limit from 4g → 1g for Master (coordinator only).
+  # The Master doesn't process data — it only schedules tasks to Workers.
   spark-master:
     build:
       context: ./spark
@@ -188,13 +171,16 @@ services:
       - SPARK_ROLE=master
       - GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json
     volumes:
-      - ${APPDATA}\gcloud:/home/spark/.config/gcloud:ro
+      - "${APPDATA}/gcloud:/home/spark/.config/gcloud:ro"
+      - "./processing:/processing"
     ports:
       - "7077:7077"
       - "8082:8080"   # Spark Web UI (8080 is taken by Trino)
     networks:
       - lakehouse-net
 
+  # FIX #2: Reduced mem_limit from 4g → 2g for Worker.
+  # SPARK_WORKER_MEMORY set to 1500M so the container OS still has headroom.
   spark-worker:
     build:
       context: ./spark
@@ -209,7 +195,65 @@ services:
       - SPARK_WORKER_CORES=2
       - GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json
     volumes:
-      - ${APPDATA}\gcloud:/home/spark/.config/gcloud:ro
+      - "${APPDATA}/gcloud:/home/spark/.config/gcloud:ro"
+      - "./processing:/processing"
+    networks:
+      - lakehouse-net
+
+  # ── Workflow Orchestration (Airflow) ──────────────────────────────────────────
+  airflow-webserver:
+    image: apache/airflow:2.8.1-python3.10
+    container_name: airflow-webserver
+    mem_limit: 1g
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8888:8080"
+    environment:
+      AIRFLOW__CORE__DAGS_FOLDER: /home/airflow/dags
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      # FIX #4: Airflow explicitly uses its own 'airflow' database, isolated from 'metastore'
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS: "false"
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW__WEBSERVER__RBAC: "true"
+      AIRFLOW_HOME: /home/airflow
+    volumes:
+      - ./dags:/home/airflow/dags
+      - ./airflow_logs:/home/airflow/logs
+      - ./processing:/home/airflow/processing
+      - "${APPDATA}/gcloud:/home/airflow/.config/gcloud:ro"
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: /bin/bash -c "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com 2>/dev/null || true && airflow webserver"
+    networks:
+      - lakehouse-net
+
+  airflow-scheduler:
+    image: apache/airflow:2.8.1-python3.10
+    container_name: airflow-scheduler
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_started
+    environment:
+      AIRFLOW__CORE__DAGS_FOLDER: /home/airflow/dags
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS: "false"
+      AIRFLOW_HOME: /home/airflow
+    volumes:
+      - ./dags:/home/airflow/dags
+      - ./airflow_logs:/home/airflow/logs
+      - ./processing:/home/airflow/processing
+      - "${APPDATA}/gcloud:/home/airflow/.config/gcloud:ro"
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: airflow scheduler
     networks:
       - lakehouse-net
 

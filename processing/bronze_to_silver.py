@@ -41,7 +41,11 @@ Run via Spark submit (inside container):
 
 import logging
 import os
+import sys
 from datetime import datetime, timezone
+# Add processing dir to path so gcs_auth is importable when spark-submit is used
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gcs_auth import apply_gcs_auth
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
@@ -63,6 +67,8 @@ log = logging.getLogger("bronze_to_silver")
 BRONZE_PATH      = "gs://crypto-lakehouse-group8/bronze"
 SILVER_PATH      = "gs://crypto-lakehouse-group8/silver"
 QUARANTINE_PATH  = "gs://crypto-lakehouse-group8/silver/quarantine"
+# DEFAULT to cluster URL — scripts must run distributed, not local
+SPARK_MASTER     = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
 
 # DecimalType(38, 18): 38 total digits, 18 after decimal point.
 # This matches the precision used in SQL financial systems and avoids
@@ -73,32 +79,29 @@ PRICE_DECIMAL = DecimalType(38, 18)
 
 # ── SparkSession ──────────────────────────────────────────────────────────────
 def create_spark() -> SparkSession:
-    """Create a SparkSession configured for local run with Delta Lake + MinIO."""
-    log.info("Initialising SparkSession (local mode)…")
-    spark = (
+    """Create a SparkSession configured for cluster run with Delta Lake + GCS."""
+    log.info("Connecting to Spark Master: %s", SPARK_MASTER)
+    builder = (
         SparkSession.builder
         .appName("BronzeToSilver")
-        .master("local[*]")
-        # ── Delta Lake extension ───────────────────────────────────────────
+        .master(SPARK_MASTER)
         .config("spark.sql.extensions",
                 "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        # ── GCS Connector Auth (Nuclear approach) ─────────────────────
-        .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
-        .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
-        .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "/home/spark/.config/gcloud/application_default_credentials.json"))
-        .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
-        # Delta Atomicity on GCS
-        .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
-        # ── Performance tuning for local single-machine run ────────────────
-        .config("spark.driver.memory",   "2g")
-        .config("spark.executor.memory", "2g")
-        .config("spark.sql.shuffle.partitions", "4")  # small for local
-        .getOrCreate()
+        .config("spark.delta.logStore.gs.impl",
+                "io.delta.storage.GCSLogStore")
+        .config("spark.driver.memory",   "1g")
+        .config("spark.executor.memory", "1500m")  # match worker mem_limit
+        .config("spark.executor.cores",  "2")       # match worker cores
+        .config("spark.sql.shuffle.partitions", "8")
     )
+    # Auto-detect SA Key vs ADC — no hardcoded auth type needed
+    builder = apply_gcs_auth(builder)
+    spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
-    log.info("SparkSession ready — version %s", spark.version)
+    log.info("SparkSession ready — version %s | master: %s",
+             spark.version, spark.sparkContext.master)
     return spark
 
 
