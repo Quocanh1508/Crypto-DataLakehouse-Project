@@ -54,6 +54,11 @@ KAFKA_BOOTSTRAP  = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
 KAFKA_TOPIC      = os.getenv("KAFKA_TOPIC_RAW",          "crypto_trades_raw")
 # DEFAULT to cluster URL — scripts must run distributed, not local
 SPARK_MASTER     = os.getenv("SPARK_MASTER_URL",          "spark://spark-master:7077")
+# Use 'latest' to avoid reading full backlog on startup;
+# set to 'earliest' explicitly only for historical backfill runs.
+KAFKA_OFFSETS    = os.getenv("KAFKA_STARTING_OFFSETS",    "latest")
+# Trigger interval: 60s gives micro-batches enough time on limited resources.
+TRIGGER_INTERVAL = os.getenv("SPARK_TRIGGER_INTERVAL",    "60 seconds")
 
 BRONZE_PATH      = "gs://crypto-lakehouse-group8/bronze"
 CHECKPOINT_PATH  = "gs://crypto-lakehouse-group8/checkpoints/kafka_to_bronze"
@@ -109,7 +114,7 @@ def main():
         .format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
         .option("subscribe",               KAFKA_TOPIC)
-        .option("startingOffsets",         "earliest")
+        .option("startingOffsets",         KAFKA_OFFSETS)
         .option("failOnDataLoss",          "false")
         .load()
     )
@@ -159,7 +164,7 @@ def main():
         .option("checkpointLocation", CHECKPOINT_PATH)
         .option("mergeSchema", "true")              # handle field additions gracefully
         .partitionBy("processing_date", "s")        # FIX 3: date-first partition
-        .trigger(processingTime="30 seconds")
+        .trigger(processingTime=TRIGGER_INTERVAL)
         .start(BRONZE_PATH)
     )
 

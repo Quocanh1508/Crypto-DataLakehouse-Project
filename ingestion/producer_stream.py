@@ -18,7 +18,7 @@ from datetime import datetime
 
 import requests
 import websocket
-import rel
+
 from kafka import KafkaProducer
 from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log
 
@@ -124,7 +124,13 @@ def on_open(ws):
     reraise=True,
 )
 def run_stream(producer: KafkaProducer, ws_url: str):
-    """Open WebSocket and block. On disconnect, tenacity retries with backoff."""
+    """Open WebSocket and block until connection is lost. Tenacity retries on disconnect.
+
+    NOTE: run_forever() is BLOCKING — it only returns when the WebSocket is
+    genuinely closed or an error occurs. Using rel dispatcher was a bug because
+    rel makes run_forever() non-blocking, causing immediate retry loops.
+    Native ping_interval handles keepalive without requiring rel.
+    """
     log.info("Connecting to WebSocket: %s", ws_url[:80] + "...")
     ws = websocket.WebSocketApp(
         ws_url,
@@ -133,16 +139,14 @@ def run_stream(producer: KafkaProducer, ws_url: str):
         on_close=on_close,
         on_open=on_open,
     )
-    # run_forever non-blocking with rel dispatcher to send heartbeats
+    # Blocking call — run_forever returns only when the connection drops.
+    # ping_interval keeps the connection alive (Binance requires a pong within 10 min).
     ws.run_forever(
-        dispatcher=rel,
-        ping_interval=60,
-        ping_timeout=10
+        ping_interval=30,   # send ping every 30s
+        ping_timeout=10     # wait 10s for pong before treating as disconnected
     )
-    rel.signal(2, rel.abort)  # Allow safe exit via KeyboardInterrupt
-    rel.dispatch()
-    
-    raise ConnectionError("WebSocket disconnected unexpectedly — triggering retry.")
+    # If we reach here, the connection was truly lost → raise to trigger retry
+    raise ConnectionError("WebSocket disconnected — triggering tenacity retry.")
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
