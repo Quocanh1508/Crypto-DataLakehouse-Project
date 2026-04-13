@@ -26,14 +26,21 @@ run_silver = BashOperator(
     task_id="bronze_to_silver_batch",
     bash_command="""
         set -e
-        echo "[SILVER] Starting Bronze → Silver transformation..."
+        echo "[BRONZE→SILVER] Starting Silver transformation job..."
         echo "✅ Running on Spark Master (1 executor × 1 core)"
         echo ""
+
+        # Prevent duplicate execution (Anti-collision lock)
+        if docker exec spark-master pgrep -f "bronze_to_silver.py" >/dev/null; then
+            echo "❌ BronzeToSilver is already running."
+            echo "   Skipping this run to avoid resource starvation."
+            exit 1
+        fi
 
         docker exec -i spark-master spark-submit \
             --master spark://spark-master:7077 \
             --deploy-mode client \
-            --driver-memory 1g \
+            --driver-memory 512m \
             --executor-memory 512m \
             --num-executors 1 \
             --executor-cores 1 \

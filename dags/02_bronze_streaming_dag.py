@@ -59,7 +59,7 @@ run_bronze = BashOperator(
             spark-master spark-submit \
                 --master spark://spark-master:7077 \
                 --deploy-mode client \
-                --driver-memory 1g \
+                --driver-memory 2g \
                 --executor-memory 768m \
                 --num-executors 1 \
                 --executor-cores 1 \

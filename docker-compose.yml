@@ -166,7 +166,7 @@ services:
     build:
       context: ./spark
     container_name: spark-master
-    mem_limit: 1g
+    mem_limit: 3g
     environment:
       - SPARK_ROLE=master
       - GOOGLE_APPLICATION_CREDENTIALS=/home/spark/.config/gcloud/application_default_credentials.json
@@ -234,7 +234,7 @@ services:
   airflow-scheduler:
     image: apache/airflow:2.8.1-python3.10
     container_name: airflow-scheduler
-    mem_limit: 512m
+    mem_limit: 1g
     depends_on:
       postgres:
         condition: service_healthy

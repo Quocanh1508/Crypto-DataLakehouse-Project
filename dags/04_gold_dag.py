@@ -26,14 +26,21 @@ run_gold = BashOperator(
     task_id="silver_to_gold_aggregation",
     bash_command="""
         set -e
-        echo "[GOLD] Starting Silver → Gold aggregation..."
+        echo "[SILVER→GOLD] Starting Gold aggregation job..."
         echo "✅ Running on Spark Master (1 executor × 1 core)"
         echo ""
+
+        # Prevent duplicate execution (Anti-collision lock)
+        if docker exec spark-master pgrep -f "silver_to_gold.py" >/dev/null; then
+            echo "❌ SilverToGold is already running."
+            echo "   Skipping this run to avoid resource starvation."
+            exit 1
+        fi
 
         docker exec -i spark-master spark-submit \
             --master spark://spark-master:7077 \
             --deploy-mode client \
-            --driver-memory 1g \
+            --driver-memory 512m \
             --executor-memory 512m \
             --num-executors 1 \
             --executor-cores 1 \

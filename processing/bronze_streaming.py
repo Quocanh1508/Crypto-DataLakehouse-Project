@@ -93,7 +93,7 @@ def create_spark() -> SparkSession:
         # Delta atomicity on GCS
         .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
         .config("spark.databricks.delta.retentionDurationCheck.enabled", "false")
-        .config("spark.driver.memory",   "1g")
+        .config("spark.driver.memory",   "2g")
         .config("spark.sql.shuffle.partitions", "4")
     )
     # apply_gcs_auth auto-detects SA key or ADC and injects the right configs

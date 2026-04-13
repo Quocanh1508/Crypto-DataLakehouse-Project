@@ -91,7 +91,7 @@ def create_spark() -> SparkSession:
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.delta.logStore.gs.impl",
                 "io.delta.storage.GCSLogStore")
-        .config("spark.driver.memory",   "1g")
+        .config("spark.driver.memory",   "2g")
         .config("spark.sql.shuffle.partitions", "8")
     )
     # Auto-detect SA Key vs ADC — no hardcoded auth type needed
@@ -144,18 +144,6 @@ def split_valid_quarantine(df: DataFrame):
              total, n_clean, n_bad, 100 * n_bad / max(total, 1))
 
     return clean_df, quarantine_df
-
-
-# ── Bronze Reader ─────────────────────────────────────────────────────────────
-def read_bronze(spark: SparkSession) -> DataFrame:
-    """
-    Read the Bronze Delta table (written as Append by bronze_streaming.py).
-    May contain duplicates if the streaming checkpoint was ever reset.
-    """
-    log.info("Reading Bronze Delta table from: %s", BRONZE_PATH)
-    df = spark.read.format("delta").load(BRONZE_PATH)
-    log.info("Bronze row count: %d", df.count())
-    return df
 
 
 # ── Type-casting & Enrichment ─────────────────────────────────────────────────
@@ -278,35 +266,68 @@ def write_silver(spark: SparkSession, df: DataFrame):
         log.info("✅ Silver initial write complete — partitioned by (symbol, dt)")
 
 
+# ── Micro-Batch Processor ─────────────────────────────────────────────────────
+def process_micro_batch(batch_df: DataFrame, batch_id: int):
+    """
+    Process each incremental batch of new data from Bronze.
+    """
+    batch_count = batch_df.count()
+    if batch_count == 0:
+        return
+
+    log.info("=== Processing Micro-Batch %d (%d rows) ===", batch_id, batch_count)
+
+    # 1. Cast & enrich (Decimal precision + dt extraction)
+    cast_df = cast_and_enrich(batch_df)
+
+    # 2. Split clean vs bad rows
+    clean_df, quarantine_df = split_valid_quarantine(cast_df)
+
+    # 3. Write quarantine for audit
+    write_quarantine(quarantine_df)
+
+    # 4. Deduplicate clean rows WITHIN this micro-batch
+    deduped_df = deduplicate(clean_df)
+
+    # 5. Write to Silver via MERGE
+    # The spark session is needed for MERGE, we can get it from the dataframe.
+    spark = batch_df.sparkSession
+    write_silver(spark, deduped_df)
+
+
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 def main():
-    log.info("=== Bronze → Silver Pipeline starting ===")
+    log.info("=== Bronze → Silver Pipeline starting (INCREMENTAL) ===")
     spark = create_spark()
     try:
-        # 1. Read Bronze
-        bronze_df = read_bronze(spark)
+        log.info("Reading Bronze Delta table as Stream from: %s", BRONZE_PATH)
+        bronze_stream = (
+            spark.readStream
+            .format("delta")
+            # Limit files per trigger to avoid memory pressure on large backlogs
+            .option("maxFilesPerTrigger", 5) 
+            .load(BRONZE_PATH)
+        )
 
-        # 2. Cast & enrich (Decimal precision + dt extraction)
-        cast_df = cast_and_enrich(bronze_df)
+        CHECKPOINT_PATH = "gs://crypto-lakehouse-group8/checkpoints/bronze_to_silver"
 
-        # 3. FIX 3: Split clean vs bad rows — never abort for bad data
-        clean_df, quarantine_df = split_valid_quarantine(cast_df)
-
-        # 4. Write quarantine for audit (always, even if empty)
-        write_quarantine(quarantine_df)
-
-        # 5. Deduplicate clean rows
-        deduped_df = deduplicate(clean_df)
-
-        # 6. Write Silver (Merge/Upsert)
-        write_silver(spark, deduped_df)
-
+        log.info("Starting Streaming Query with trigger(availableNow=True)...")
+        query = (
+            bronze_stream
+            .writeStream
+            .foreachBatch(process_micro_batch)
+            .option("checkpointLocation", CHECKPOINT_PATH)
+            .trigger(availableNow=True)
+            .start()
+        )
+        
+        query.awaitTermination()
+        
         log.info("=== Bronze → Silver Pipeline COMPLETE ===")
 
     except Exception as exc:
-        # Only genuine infra/Spark failures reach here (not DQ issues)
         log.critical("Infrastructure failure — aborting pipeline: %s", exc, exc_info=True)
-        raise  # let the orchestrator (Airflow) handle retry/alerting
+        raise
     finally:
         spark.stop()
 
