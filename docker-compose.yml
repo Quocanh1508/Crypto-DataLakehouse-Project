@@ -68,6 +68,33 @@ services:
     networks:
       - lakehouse-net
 
+  # ── Ingestion: WebSocket Streaming Producer (24/7) ───────────────────────────
+  # Managed by Docker (not Airflow) because it's a long-running process.
+  # restart: always ensures it auto-recovers from crashes without human intervention.
+  producer-stream:
+    image: python:3.10-slim
+    container_name: producer-stream
+    mem_limit: 256m
+    restart: always
+    depends_on:
+      kafka:
+        condition: service_healthy
+    working_dir: /app
+    volumes:
+      - ./ingestion:/app
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+      KAFKA_TOPIC_RAW: "crypto_trades_raw"
+      KAFKA_TOPIC_DLQ: "crypto_trades_dlq"
+      BINANCE_REST_URL: "https://api.binance.com"
+      BINANCE_WS_URL: "wss://stream.binance.com:9443/stream"
+      TOP_N_COINS: "10"
+    command: >
+      bash -c "pip install -q kafka-python requests websocket-client rel tenacity &&
+               python producer_stream.py"
+    networks:
+      - lakehouse-net
+
   # ── Metadata Layer (PostgreSQL + Hive Metastore) ─────────────────────────────
   # FIX #4: init_postgres.sql already provisions TWO separate databases:
   #   - metastore (owner: hive)   → for Hive Metastore
