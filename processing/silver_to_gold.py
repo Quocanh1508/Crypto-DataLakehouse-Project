@@ -67,18 +67,16 @@ def create_spark() -> SparkSession:
         SparkSession.builder
         .appName("SilverToGold")
         .master(SPARK_MASTER)
-        # NOTE: Delta Lake read/write works without explicit extensions in Spark 3.5.8
-        # Delta 3.1.0 is compatible without needing DeltaSparkSessionExtension
-        # ── GCS Connector Auth (Application Default Credentials) ─────────
         .config("spark.hadoop.fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
         .config("spark.hadoop.fs.gs.auth.type", "SERVICE_ACCOUNT_JSON_KEYFILE")
         .config("spark.hadoop.fs.gs.auth.service.account.json.keyfile", 
                 os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "/home/spark/.config/gcloud/application_default_credentials.json"))
         .config("spark.hadoop.fs.gs.auth.service.account.enable", "true")
-        # Delta Atomicity on GCS
         .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
-        # ── Performance tuning for cluster mode ────────────────────────────
-        .config("spark.driver.memory",   "2g")
+        .config("spark.driver.memory",   "1g")
+        .config("spark.executor.memory", "1500m")
+        .config("spark.executor.cores",  "2")
+        .config("spark.sql.shuffle.partitions", "8")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -88,17 +86,7 @@ def create_spark() -> SparkSession:
 
 
 def read_silver(spark: SparkSession) -> DataFrame:
-    """
-    Read cleansed Silver data from GCS (Parquet files from Delta Lake).
-    
-    Expected schema (from bronze_to_silver.py):
-      - symbol: string
-      - event_time: timestamp (UTC)
-      - trade_id: long
-      - price_decimal: decimal(38, 18)
-      - quantity_decimal: decimal(38, 18)
-      - ... (other fields)
-    """
+
     log.info("Reading Silver layer from: %s", SILVER_PATH)
     
     # Read Delta Lake format (not plain Parquet)
@@ -118,27 +106,13 @@ def read_silver(spark: SparkSession) -> DataFrame:
         .withColumn("quantity", F.col("quantity_decimal").cast("double"))
     )
     
-    log.info("Silver table metadata loaded successfully.")
+    log.info("Silver table loaded: %d rows", df.count())
     return df
 
 
 # ── Build OHLCV Candles ───────────────────────────────────────────────────────
 def build_ohlcv_candles(df: DataFrame, window_duration: str) -> DataFrame:
-    """
-    Aggregate ticks into OHLCV candles using time window.
-    
-    Args:
-        df: Silver DataFrame with (symbol, event_time, price, quantity)
-        window_duration: "1 minute" or "5 minutes"
-    
-    Returns:
-        DataFrame with columns:
-          - symbol
-          - candle_time (start of window)
-          - open, high, low, close (prices)
-          - volume (sum of quantities)
-          - tick_count (number of trades in candle)
-    """
+
     log.info("Building %s OHLCV candles...", window_duration)
     
     # Create time window
@@ -166,22 +140,13 @@ def build_ohlcv_candles(df: DataFrame, window_duration: str) -> DataFrame:
         .withColumn("candle_duration", F.lit(window_duration))
     )
     
-    log.info("Generated %s candles formulation in DAG", window_duration)
+    log.info("Generated %d candles", ohlcv.count())
     return ohlcv
 
 
 # ── Compute Moving Averages ───────────────────────────────────────────────────
 def compute_moving_averages(df: DataFrame, ma_periods: list[int]) -> DataFrame:
-    """
-    Compute moving averages on close price for each symbol.
-    
-    Args:
-        df: DataFrame with (symbol, candle_time, close, ...)
-        ma_periods: list of periods [7, 20, 50]
-    
-    Returns:
-        DataFrame with new columns: ma_7, ma_20, ma_50 (nullable if insufficient history)
-    """
+
     log.info("Computing moving averages: %s", ma_periods)
     
     # Define window: order by candle_time, partition by symbol
@@ -206,21 +171,7 @@ def compute_moving_averages(df: DataFrame, ma_periods: list[int]) -> DataFrame:
 
 # ── Merge & Prepare for Gold ──────────────────────────────────────────────────
 def prepare_gold_table(df_1m: DataFrame, df_5m: DataFrame) -> DataFrame:
-    """
-    Combine 1-minute and 5-minute candles into a single Gold table.
-    
-    Strategy:
-      1. Add a marker column to identify candle type
-      2. Union both datasets
-      3. Add metadata (processing_timestamp, candle_date for partitioning)
-    
-    Args:
-        df_1m: 1-minute OHLCV candles
-        df_5m: 5-minute OHLCV candles
-    
-    Returns:
-        Unified Gold DataFrame ready for write
-    """
+
     log.info("Preparing unified Gold table...")
     
     # Add candle_date for partitioning (date of the candle_time)
@@ -257,23 +208,13 @@ def prepare_gold_table(df_1m: DataFrame, df_5m: DataFrame) -> DataFrame:
     
     gold_df = gold_df.select(column_order)
     
-    log.info("Unified Gold table schema and DAG prepared")
+    log.info("Gold table prepared: %d rows", gold_df.count())
     return gold_df
 
 
 # ── Write to Gold Layer ───────────────────────────────────────────────────────
 def write_gold(df: DataFrame, gold_path: str) -> None:
-    """
-    Write Gold table to GCS as Parquet files with partitioning.
-    
-    Partitioning: (symbol, candle_date)
-      - symbol: enables per-symbol queries for dbt tests
-      - candle_date: enables date range queries for Time Series analysis
-    
-    Write mode: Overwrite
-      - Safe because this job is idempotent (can rerun any day)
-      - Full table recompute from Silver ensures consistency
-    """
+
     log.info("Writing Gold table to: %s (partitioned by symbol, candle_date)", gold_path)
     
     (
