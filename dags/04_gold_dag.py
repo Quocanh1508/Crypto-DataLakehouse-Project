@@ -27,22 +27,22 @@ run_gold = BashOperator(
     bash_command="""
         set -e
         echo "[GOLD] Starting Silver → Gold aggregation..."
-        echo "✅ Running on Spark Master (1 executor × 2 cores)"
+        echo "✅ Running on Spark Master (1 executor × 1 core)"
         echo ""
 
         docker exec -i spark-master spark-submit \
             --master spark://spark-master:7077 \
             --deploy-mode client \
             --driver-memory 1g \
-            --executor-memory 2g \
+            --executor-memory 512m \
             --num-executors 1 \
-            --executor-cores 2 \
+            --executor-cores 1 \
             --packages io.delta:delta-spark_2.12:3.2.1 \
             --conf "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension" \
             --conf "spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog" \
             --conf "spark.delta.logStore.gs.impl=io.delta.storage.GCSLogStore" \
-            --conf "spark.sql.shuffle.partitions=4" \
-            --conf "spark.cores.max=2" \
+            --conf "spark.sql.shuffle.partitions=2" \
+            --conf "spark.cores.max=1" \
             /processing/silver_to_gold.py
 
         echo "✓ Gold aggregation completed"

@@ -79,8 +79,6 @@ def create_spark() -> SparkSession:
         .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
         # ── Performance tuning for cluster mode ────────────────────────────
         .config("spark.driver.memory",   "1g")
-        .config("spark.executor.memory", "1500m")
-        .config("spark.executor.cores",  "2")
         .config("spark.sql.shuffle.partitions", "8")
         .getOrCreate()
     )

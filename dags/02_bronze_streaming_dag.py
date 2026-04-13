@@ -54,10 +54,12 @@ run_bronze = BashOperator(
         exec docker exec -i \
             -e KAFKA_BOOTSTRAP_SERVERS="kafka:29092" \
             -e KAFKA_TOPIC_RAW="crypto_trades_raw" \
+            -e KAFKA_STARTING_OFFSETS="latest" \
+            -e SPARK_TRIGGER_INTERVAL="60 seconds" \
             spark-master spark-submit \
                 --master spark://spark-master:7077 \
                 --deploy-mode client \
-                --driver-memory 512m \
+                --driver-memory 1g \
                 --executor-memory 768m \
                 --num-executors 1 \
                 --executor-cores 1 \
@@ -66,7 +68,7 @@ run_bronze = BashOperator(
                 --conf "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension" \
                 --conf "spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog" \
                 --conf "spark.delta.logStore.gs.impl=io.delta.storage.GCSLogStore" \
-                --conf "spark.streaming.kafka.maxRatePerPartition=2000" \
+                --conf "spark.streaming.kafka.maxRatePerPartition=500" \
                 --conf "spark.sql.shuffle.partitions=2" \
                 --conf "spark.cores.max=1" \
                 --conf "spark.ivy.cache.dir=/tmp/ivy" \

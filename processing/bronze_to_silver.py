@@ -92,8 +92,6 @@ def create_spark() -> SparkSession:
         .config("spark.delta.logStore.gs.impl",
                 "io.delta.storage.GCSLogStore")
         .config("spark.driver.memory",   "1g")
-        .config("spark.executor.memory", "1500m")  # match worker mem_limit
-        .config("spark.executor.cores",  "2")       # match worker cores
         .config("spark.sql.shuffle.partitions", "8")
     )
     # Auto-detect SA Key vs ADC — no hardcoded auth type needed
