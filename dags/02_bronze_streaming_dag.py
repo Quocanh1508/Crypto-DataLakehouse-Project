@@ -59,8 +59,8 @@ run_bronze = BashOperator(
             spark-master spark-submit \
                 --master spark://spark-master:7077 \
                 --deploy-mode client \
-                --driver-memory 1g \
-                --executor-memory 768m \
+                --driver-memory 512m \
+                --executor-memory 512m \
                 --num-executors 1 \
                 --executor-cores 1 \
                 --packages "io.delta:delta-spark_2.12:3.2.1,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4,commons-pool:commons-pool:1.6" \

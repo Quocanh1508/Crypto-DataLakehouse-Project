@@ -136,26 +136,9 @@ def split_valid_quarantine(df: DataFrame):
     clean_df      = df.filter(F.col("quarantine_reason") == "").drop("quarantine_reason")
     quarantine_df = df.filter(F.col("quarantine_reason") != "")
 
-    total      = df.count()
-    n_clean    = clean_df.count()
-    n_bad      = quarantine_df.count()
-
-    log.info("[DQ] Total: %d | Clean: %d | Quarantine: %d (%.1f%%)",
-             total, n_clean, n_bad, 100 * n_bad / max(total, 1))
+    log.info("[DQ] Evaluated rules. Splitting clean and quarantine records.")
 
     return clean_df, quarantine_df
-
-
-# ── Bronze Reader ─────────────────────────────────────────────────────────────
-def read_bronze(spark: SparkSession) -> DataFrame:
-    """
-    Read the Bronze Delta table (written as Append by bronze_streaming.py).
-    May contain duplicates if the streaming checkpoint was ever reset.
-    """
-    log.info("Reading Bronze Delta table from: %s", BRONZE_PATH)
-    df = spark.read.format("delta").load(BRONZE_PATH)
-    log.info("Bronze row count: %d", df.count())
-    return df
 
 
 # ── Type-casting & Enrichment ─────────────────────────────────────────────────
@@ -209,9 +192,7 @@ def deduplicate(df: DataFrame) -> DataFrame:
         .filter(F.col("_rank") == 1)
         .drop("_rank")
     )
-    before = df.count()
-    after  = deduped.count()
-    log.info("Dedup: %d → %d rows (removed %d duplicates)", before, after, before - after)
+    log.info("Dedup operation prepared")
     return deduped
 
 
@@ -225,7 +206,7 @@ def write_quarantine(df: DataFrame):
         log.info("[Quarantine] No bad rows — skipping quarantine write.")
         return
 
-    log.info("[Quarantine] Writing %d bad rows to: %s", df.count(), QUARANTINE_PATH)
+    log.info("[Quarantine] Writing bad rows to: %s", QUARANTINE_PATH)
     (
         df
         .withColumn("quarantine_dt", F.current_date())
@@ -278,35 +259,68 @@ def write_silver(spark: SparkSession, df: DataFrame):
         log.info("✅ Silver initial write complete — partitioned by (symbol, dt)")
 
 
+# ── Micro-Batch Processor ─────────────────────────────────────────────────────
+def process_micro_batch(batch_df: DataFrame, batch_id: int):
+    """
+    Process each incremental batch of new data from Bronze.
+    """
+    if batch_df.isEmpty():
+        return
+
+    log.info("=== Processing Micro-Batch %d ===", batch_id)
+
+    # 1. Cast & enrich (Decimal precision + dt extraction)
+    cast_df = cast_and_enrich(batch_df)
+
+    # 2. Split clean vs bad rows
+    clean_df, quarantine_df = split_valid_quarantine(cast_df)
+
+    # 3. Write quarantine for audit
+    write_quarantine(quarantine_df)
+
+    # 4. Deduplicate clean rows WITHIN this micro-batch
+    deduped_df = deduplicate(clean_df)
+
+    # 5. Write to Silver via MERGE
+    # The spark session is needed for MERGE, we can get it from the dataframe.
+    spark = batch_df.sparkSession
+    write_silver(spark, deduped_df)
+
+
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 def main():
-    log.info("=== Bronze → Silver Pipeline starting ===")
+    log.info("=== Bronze → Silver Pipeline starting (INCREMENTAL) ===")
     spark = create_spark()
     try:
-        # 1. Read Bronze
-        bronze_df = read_bronze(spark)
+        log.info("Reading Bronze Delta table as Stream from: %s", BRONZE_PATH)
+        bronze_stream = (
+            spark.readStream
+            .format("delta")
+            # Tune payload size. 8m prevents 512m driver from OOMing
+            # while still processing around ~500k rows per batch
+            .option("maxBytesPerTrigger", "8m") 
+            .load(BRONZE_PATH)
+        )
 
-        # 2. Cast & enrich (Decimal precision + dt extraction)
-        cast_df = cast_and_enrich(bronze_df)
+        CHECKPOINT_PATH = "gs://crypto-lakehouse-group8/checkpoints/bronze_to_silver"
 
-        # 3. FIX 3: Split clean vs bad rows — never abort for bad data
-        clean_df, quarantine_df = split_valid_quarantine(cast_df)
-
-        # 4. Write quarantine for audit (always, even if empty)
-        write_quarantine(quarantine_df)
-
-        # 5. Deduplicate clean rows
-        deduped_df = deduplicate(clean_df)
-
-        # 6. Write Silver (Merge/Upsert)
-        write_silver(spark, deduped_df)
-
+        log.info("Starting Streaming Query with trigger(availableNow=True)...")
+        query = (
+            bronze_stream
+            .writeStream
+            .foreachBatch(process_micro_batch)
+            .option("checkpointLocation", CHECKPOINT_PATH)
+            .trigger(availableNow=True)
+            .start()
+        )
+        
+        query.awaitTermination()
+        
         log.info("=== Bronze → Silver Pipeline COMPLETE ===")
 
     except Exception as exc:
-        # Only genuine infra/Spark failures reach here (not DQ issues)
         log.critical("Infrastructure failure — aborting pipeline: %s", exc, exc_info=True)
-        raise  # let the orchestrator (Airflow) handle retry/alerting
+        raise
     finally:
         spark.stop()
 
