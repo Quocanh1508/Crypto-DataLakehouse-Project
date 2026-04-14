@@ -40,8 +40,8 @@ run_silver = BashOperator(
         docker exec -i spark-master spark-submit \
             --master spark://spark-master:7077 \
             --deploy-mode client \
-            --driver-memory 512m \
-            --executor-memory 512m \
+            --driver-memory 1g \
+            --executor-memory 768m \
             --num-executors 1 \
             --executor-cores 1 \
             --packages io.delta:delta-spark_2.12:3.2.1 \

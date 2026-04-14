@@ -91,7 +91,7 @@ def create_spark() -> SparkSession:
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.delta.logStore.gs.impl",
                 "io.delta.storage.GCSLogStore")
-        .config("spark.driver.memory",   "2g")
+        .config("spark.driver.memory",   "1g")
         .config("spark.sql.shuffle.partitions", "8")
     )
     # Auto-detect SA Key vs ADC — no hardcoded auth type needed
@@ -136,12 +136,7 @@ def split_valid_quarantine(df: DataFrame):
     clean_df      = df.filter(F.col("quarantine_reason") == "").drop("quarantine_reason")
     quarantine_df = df.filter(F.col("quarantine_reason") != "")
 
-    total      = df.count()
-    n_clean    = clean_df.count()
-    n_bad      = quarantine_df.count()
-
-    log.info("[DQ] Total: %d | Clean: %d | Quarantine: %d (%.1f%%)",
-             total, n_clean, n_bad, 100 * n_bad / max(total, 1))
+    log.info("[DQ] Evaluated rules. Splitting clean and quarantine records.")
 
     return clean_df, quarantine_df
 
@@ -197,9 +192,7 @@ def deduplicate(df: DataFrame) -> DataFrame:
         .filter(F.col("_rank") == 1)
         .drop("_rank")
     )
-    before = df.count()
-    after  = deduped.count()
-    log.info("Dedup: %d → %d rows (removed %d duplicates)", before, after, before - after)
+    log.info("Dedup operation prepared")
     return deduped
 
 
@@ -213,7 +206,7 @@ def write_quarantine(df: DataFrame):
         log.info("[Quarantine] No bad rows — skipping quarantine write.")
         return
 
-    log.info("[Quarantine] Writing %d bad rows to: %s", df.count(), QUARANTINE_PATH)
+    log.info("[Quarantine] Writing bad rows to: %s", QUARANTINE_PATH)
     (
         df
         .withColumn("quarantine_dt", F.current_date())
@@ -271,11 +264,10 @@ def process_micro_batch(batch_df: DataFrame, batch_id: int):
     """
     Process each incremental batch of new data from Bronze.
     """
-    batch_count = batch_df.count()
-    if batch_count == 0:
+    if batch_df.isEmpty():
         return
 
-    log.info("=== Processing Micro-Batch %d (%d rows) ===", batch_id, batch_count)
+    log.info("=== Processing Micro-Batch %d ===", batch_id)
 
     # 1. Cast & enrich (Decimal precision + dt extraction)
     cast_df = cast_and_enrich(batch_df)
@@ -304,8 +296,9 @@ def main():
         bronze_stream = (
             spark.readStream
             .format("delta")
-            # Limit files per trigger to avoid memory pressure on large backlogs
-            .option("maxFilesPerTrigger", 5) 
+            # Tune payload size. 8m prevents 512m driver from OOMing
+            # while still processing around ~500k rows per batch
+            .option("maxBytesPerTrigger", "8m") 
             .load(BRONZE_PATH)
         )
 
