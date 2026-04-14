@@ -1,0 +1,109 @@
+version: 2
+
+# =============================================================================
+# models/marts/schema.yml
+# =============================================================================
+# Tests and documentation for the mart_crypto_dashboard model.
+# This is the final layer - data is fully computed and ready for Power BI.
+# Tests here are stricter than staging to validate derived columns.
+# =============================================================================
+
+models:
+  - name: mart_crypto_dashboard
+    description: >
+      Final mart table for Power BI "Live Crypto Ticker" dashboard.
+      Contains OHLCV from Gold + derived metrics: VWAP cumulative,
+      price_change_pct, candle_direction. Last 30 days only.
+      Materialized as TABLE in Trino schema 'marts'.
+
+    columns:
+
+      - name: symbol
+        description: "Binance USDT trading pair."
+        tests:
+          - not_null
+
+      - name: candle_time
+        description: "Start timestamp of the candle (UTC)."
+        tests:
+          - not_null
+
+      - name: window_end
+        description: "End timestamp = candle_time + duration."
+        tests:
+          - not_null
+
+      - name: candle_duration
+        description: "Candle duration string: '1 minute' or '5 minutes'."
+        tests:
+          - not_null
+
+      - name: window_minutes
+        description: "Integer minutes: 1 or 5."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 5]
+              quote: false
+
+      - name: trade_date
+        description: "DATE for partition pruning."
+        tests:
+          - not_null
+
+      - name: open
+        description: "Opening price."
+        tests:
+          - not_null
+
+      - name: high
+        description: "Highest price in candle."
+        tests:
+          - not_null
+          - assert_high_gte_low:
+              column_high: high
+              column_low: low
+
+      - name: low
+        description: "Lowest price in candle."
+        tests:
+          - not_null
+
+      - name: close
+        description: "Closing price."
+        tests:
+          - not_null
+
+      - name: volume
+        description: "Total quantity traded."
+        tests:
+          - not_null
+
+      - name: candle_direction
+        description: >
+          Trend label: 'BULLISH' (close >= open) or 'BEARISH' (close < open).
+          Used in Power BI for conditional color formatting.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['BULLISH', 'BEARISH']
+
+      - name: price_change_pct
+        description: >
+          Percentage price change vs previous candle:
+          (close - prev_close) / prev_close * 100.
+          NULL for the first candle of each symbol (no previous candle).
+
+      - name: vwap_cumulative
+        description: >
+          Volume Weighted Average Price, cumulative intraday.
+          Resets each day. NULL if total volume = 0 (very rare).
+
+      - name: ma_7
+        description: "Moving Average 7 periods (from Gold layer)."
+
+      - name: ma_20
+        description: "Moving Average 20 periods (from Gold layer)."
+
+      - name: ma_50
+        description: "Moving Average 50 periods (from Gold layer)."

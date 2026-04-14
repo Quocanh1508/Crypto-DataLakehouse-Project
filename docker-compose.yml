@@ -95,6 +95,49 @@ services:
     networks:
       - lakehouse-net
 
+  # ── Local Object Storage (MinIO - for local dev/testing only) ────────────────
+  # Trino's delta.properties uses hive.s3.endpoint=http://minio:9000
+  # MinIO provides S3-compatible storage for Trino to create/read Delta tables.
+  # In production, data lives in GCS (gs://crypto-lakehouse-group8/).
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: admin123
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - lakehouse-net
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO Client: auto-create 'gold' bucket on startup
+  mc:
+    image: minio/mc:latest
+    container_name: mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 admin admin123 &&
+      mc mb --ignore-existing myminio/gold &&
+      mc mb --ignore-existing myminio/staging &&
+      mc mb --ignore-existing myminio/marts &&
+      echo 'Buckets created successfully' &&
+      exit 0
+      "
+    networks:
+      - lakehouse-net
+
   # ── Metadata Layer (PostgreSQL + Hive Metastore) ─────────────────────────────
   # FIX #4: init_postgres.sql already provisions TWO separate databases:
   #   - metastore (owner: hive)   → for Hive Metastore
@@ -122,11 +165,16 @@ services:
       retries: 10
 
   # FIX #1: Hive Metastore now points to GCS (gs://) instead of MinIO (s3a://).
-  # MinIO dependency removed. GCS auth is handled via the mounted ADC credentials.
+  # GCS auth is handled via the mounted ADC credentials.
+  #
+  # IMPORTANT: The starburstdata/hive startup script uses `set -e` + `test -v`
+  # to verify ALL env vars exist (S3 + GCS). If ANY var is missing, the script
+  # exits immediately and the container crash-loops.
+  # Solution: set dummy S3 vars so `test -v` passes. Actual storage uses GCS.
   hive-metastore:
-    image: starburstdata/hive:3.1.2-e.18   # well-tested image for Trino + Delta Lake
+    image: starburstdata/hive:3.1.2-e.18
     container_name: hive-metastore
-    mem_limit: 512m
+    mem_limit: 1g
     depends_on:
       postgres:
         condition: service_healthy
@@ -137,9 +185,31 @@ services:
       HIVE_METASTORE_JDBC_URL: jdbc:postgresql://postgres:5432/metastore
       HIVE_METASTORE_USER: hive
       HIVE_METASTORE_PASSWORD: hivepassword
-      # FIX #1: Updated warehouse directory to point to Google Cloud Storage
-      HIVE_METASTORE_WAREHOUSE_DIR: gs://crypto-lakehouse-group8/
+      # Local dev: warehouse on MinIO. Production: gs://crypto-lakehouse-group8/
+      HIVE_METASTORE_WAREHOUSE_DIR: "s3a://gold/"
+      # --- S3 vars pointing to local MinIO (for dev/testing) ---
+      # Trino's delta.properties uses same credentials: admin / admin123
+      S3_ENDPOINT: "http://minio:9000"
+      S3_ACCESS_KEY: "admin"
+      S3_SECRET_KEY: "admin123"
+      S3_PATH_STYLE_ACCESS: "true"
+      REGION: "us-east-1"
+      # --- GCS credentials (actual storage) ---
       GOOGLE_CLOUD_KEY_FILE_PATH: /home/hive/.config/gcloud/application_default_credentials.json
+      # --- Azure dummy vars (ALL required by startup script's `test -v` checks) ---
+      # Not used. GCS is the real storage. Full list from /opt/bin/start-hive-metastore.sh
+      AZURE_ADL_CLIENT_ID: "unused"
+      AZURE_ADL_CREDENTIAL: "unused"
+      AZURE_ADL_REFRESH_URL: "https://unused"
+      AZURE_ABFS_STORAGE_ACCOUNT: "unused"
+      AZURE_ABFS_ACCESS_KEY: "unused"
+      AZURE_WASB_STORAGE_ACCOUNT: "unused"
+      AZURE_ABFS_OAUTH: "false"
+      AZURE_ABFS_OAUTH_TOKEN_PROVIDER: "unused"
+      AZURE_ABFS_OAUTH_CLIENT_ID: "unused"
+      AZURE_ABFS_OAUTH_SECRET: "unused"
+      AZURE_ABFS_OAUTH_ENDPOINT: "https://unused"
+      AZURE_WASB_ACCESS_KEY: "unused"
     volumes:
       - "${APPDATA}/gcloud:/home/hive/.config/gcloud:ro"
     networks:
@@ -260,3 +330,7 @@ services:
 networks:
   lakehouse-net:
     driver: bridge
+
+volumes:
+  minio_data:
+    driver: local

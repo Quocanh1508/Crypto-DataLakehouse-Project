@@ -1,0 +1,58 @@
+# =============================================================================
+# dbt_project.yml
+# =============================================================================
+# Đây là file cấu hình TRUNG TÂM của toàn bộ dbt project.
+#
+# dbt đọc file này đầu tiên mỗi khi bạn chạy bất kỳ lệnh nào (dbt run,
+# dbt test, dbt docs...).
+#
+# Các quyết định thiết kế:
+#   - staging/ -> materialized: view
+#       View không ghi data ra storage, chỉ là "alias" cho 1 câu SQL.
+#       Lý do: staging chỉ là bước làm sạch trung gian, không cần persist.
+#
+#   - marts/   -> materialized: view (local dev)
+#       View trên Trino vì Delta Lake trên S3 không hỗ trợ RENAME TABLE.
+#       Trên production (HDFS/GCS), có thể đổi sang materialized: table.
+#
+# Profile 'crypto_lakehouse' phải tồn tại trong ~/.dbt/profiles.yml
+# (xem profiles_template.yml trong thư mục này để biết cách tạo)
+# =============================================================================
+
+name: 'crypto_lakehouse'
+version: '1.0.0'
+config-version: 2
+
+# Kết nối với profile trong ~/.dbt/profiles.yml
+profile: 'crypto_lakehouse'
+
+# Đường dẫn thư mục (relative từ thư mục dbt/)
+model-paths: ["models"]
+test-paths:  ["tests"]
+seed-paths:  ["seeds"]
+macro-paths: ["macros"]
+analysis-paths: ["analyses"]
+snapshot-paths: ["snapshots"]
+
+# Thư mục output (dbt tạo tự động, đã được .gitignore)
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# =============================================================================
+# Cấu hình materialization theo từng nhóm models
+# =============================================================================
+models:
+  crypto_lakehouse:
+
+    staging:
+      # staging = SQL view trên Trino, không tốn storage
+      +materialized: view
+      +schema: staging          # Tạo view trong schema 'staging'
+
+    marts:
+      # marts = view cho local dev (Delta Lake trên S3 không hỗ trợ RENAME TABLE)
+      # Trên production (HDFS), đổi lại thành +materialized: table
+      +materialized: view
+      +schema: marts            # Tạo view trong schema 'marts'

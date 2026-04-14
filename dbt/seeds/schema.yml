@@ -1,0 +1,10 @@
+version: 2
+
+seeds:
+  - name: mock_gold_ohlcv
+    description: >
+      Mock data CSV for reference only. Schema matches silver_to_gold.py output.
+      NOTE: dbt seed does NOT work with Delta Lake on S3/MinIO because
+      (1) Delta requires timestamp(6) but dbt infers timestamp(3),
+      (2) Delta on S3 does not support RENAME TABLE used by dbt seed.
+      Use STEP 6 in setup_and_test.ps1 (Trino SQL INSERT) instead.
