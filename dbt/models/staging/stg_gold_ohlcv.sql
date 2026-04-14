@@ -1,93 +1,97 @@
 -- =============================================================================
 -- stg_gold_ohlcv.sql
 -- =============================================================================
--- TẦNG: Staging (materialized as VIEW)
--- NGUỒN: {{ source('gold', 'gold_ohlcv') }} = delta.default.gold_ohlcv trên Trino
--- ĐÍCHTừ: mart_crypto_dashboard.sql sẽ SELECT FROM model này
+-- LAYER: Staging (materialized as VIEW)
+-- SOURCE: {{ source('gold', 'gold_ohlcv') }} = delta.default.gold_ohlcv on Trino
+-- DOWNSTREAM: mart_crypto_dashboard.sql reads from this model
 --
--- MỤC ĐÍCH của Staging layer:
---   1. Chuẩn hoá kiểu dữ liệu (cast từ Decimal/String sang Double)
---   2. Thêm cột tính toán phụ trợ (candle_range, typical_price, window_end)
---   3. Lọc bỏ dữ liệu bất thường cơ bản (window_start trong tương lai)
---   4. Tạo cột trade_date (DATE) phục vụ partition pruning trong Power BI
+-- PURPOSE:
+--   1. Standardize data types (cast Decimal -> Double for Trino window functions)
+--   2. Derive integer window_minutes from string candle_duration ("1 minute" -> 1)
+--   3. Compute helper columns: candle_range, typical_price, window_end
+--   4. Filter out anomalous future timestamps
+--   5. Pass through candle_date for partition pruning in Power BI
 --
--- TẠI SAO DÙNG VIEW thay vì TABLE?
---   - Staging chỉ là bước làm sạch trung gian, không cần lưu vào storage
---   - View = Trino tự compute khi có request, không tốn GCS space
---   - Grạy dbt run nhanh hơn (không cần ghi Parquet files)
+-- WHY VIEW instead of TABLE?
+--   Staging is an intermediate cleanup step. VIEW = no GCS storage cost,
+--   Trino computes on-the-fly when queried. dbt run is faster (no Parquet write).
 --
--- LƯU Ý KỸ THUẬT:
---   - Trino Delta Lake đọc giá trị Decimal từ Gold table
---   - CAST AS DOUBLE để tránh lỗi arithmetic với DecimalType trong window functions
---   - INTERVAL '1' MINUTE * window_minutes: Trino hỗ trợ nhân interval với số nguyên
+-- COLUMN MAPPING (silver_to_gold.py -> staging):
+--   candle_time      -> candle_time (passthrough)
+--   candle_date      -> trade_date  (alias for BI consistency)
+--   candle_duration  -> candle_duration + window_minutes (derived INT)
+--   tick_count       -> tick_count (passthrough)
+--   ma_7/ma_20/ma_50 -> passthrough
 -- =============================================================================
 
 WITH source AS (
-    /*
-     * {{ source('gold', 'gold_ohlcv') }} là cú pháp Jinja template của dbt.
-     * dbt tự resolve thành: delta.default.gold_ohlcv
-     * Lợi ích: nếu bảng Gold đổi schema, chỉ sửa sources.yml, không cần sửa file này.
-     */
     SELECT * FROM {{ source('gold', 'gold_ohlcv') }}
 ),
 
 enriched AS (
     SELECT
-        -- ── Khóa định danh (Primary Key tự nhiên của nến) ──────────────────
+        -- === Identifiers =====================================================
         symbol,
-        window_start,
-        window_minutes,
+        candle_time,
+        candle_duration,
 
-        -- ── OHLCV Core ─────────────────────────────────────────────────────
-        -- Cast về DOUBLE để Trino tính window functions (VWAP, SMA) chính xác.
-        -- Gold layer lưu dưới dạng Decimal(38,18) từ Silver, DOUBLE đủ precision
-        -- cho display và BI purposes (không cần 18 chữ số thập phân ở dashboard).
+        -- Derive integer minutes from string duration for calculations
+        -- silver_to_gold.py writes: "1 minute" or "5 minutes"
+        CASE candle_duration
+            WHEN '1 minute'  THEN 1
+            WHEN '5 minutes' THEN 5
+            ELSE NULL
+        END                                              AS window_minutes,
+
+        -- === OHLCV Core ======================================================
+        -- Cast to DOUBLE for Trino window functions (VWAP, SMA).
+        -- Gold layer stores as DOUBLE from PySpark, but explicit cast ensures safety.
         CAST(open   AS DOUBLE) AS open,
         CAST(high   AS DOUBLE) AS high,
         CAST(low    AS DOUBLE) AS low,
         CAST(close  AS DOUBLE) AS close,
         CAST(volume AS DOUBLE) AS volume,
 
-        -- ── Moving Averages từ Gold layer ──────────────────────────────────
-        -- Giữ nguyên từ Gold, không tính lại ở đây (Gold đã làm)
-        sma_5,
-        sma_20,
+        -- === Moving Averages (from Gold layer, passthrough) ==================
+        ma_7,
+        ma_20,
+        ma_50,
 
-        -- ── Trade Metadata ─────────────────────────────────────────────────
-        trade_count,
+        -- === Trade Metadata ==================================================
+        tick_count,
 
-        -- ── Cột phụ trợ: Candle Range ──────────────────────────────────────
-        -- Ý nghĩa: biên độ dao động giá trong 1 nến (high - low)
-        -- Dùng trong Power BI để visualize volatility.
-        -- Nến range rộng = thị trường biến động mạnh.
-        CAST(high AS DOUBLE) - CAST(low AS DOUBLE)      AS candle_range,
+        -- === Derived: Candle Range ===========================================
+        -- Meaning: price range within a candle (high - low)
+        -- Used in Power BI to visualize volatility.
+        CAST(high AS DOUBLE) - CAST(low AS DOUBLE)       AS candle_range,
 
-        -- ── Cột phụ trợ: Typical Price ─────────────────────────────────────
-        -- Công thức: (high + low + close) / 3
-        -- Được dùng để tính VWAP ở mart layer.
-        -- Lý do không dùng just close: typical price capture cả high/low extremes.
+        -- === Derived: Typical Price ==========================================
+        -- Formula: (high + low + close) / 3
+        -- Used to calculate VWAP in the mart layer.
         (CAST(high AS DOUBLE) + CAST(low AS DOUBLE) + CAST(close AS DOUBLE)) / 3.0
                                                          AS typical_price,
 
-        -- ── Cột phụ trợ: Window End Time ──────────────────────────────────
-        -- Tính thời điểm kết thúc nến từ window_start.
-        -- Trino: INTERVAL '1' MINUTE * integer là hợp lệ.
-        -- Dùng trong Power BI timeline axis để hiển thị đúng khoảng thời gian.
-        window_start + (INTERVAL '1' MINUTE) * window_minutes
-                                                         AS window_end,
+        -- === Derived: Window End Time ========================================
+        -- Compute end time from candle_time + duration
+        CASE candle_duration
+            WHEN '1 minute'  THEN candle_time + INTERVAL '1' MINUTE
+            WHEN '5 minutes' THEN candle_time + INTERVAL '5' MINUTE
+            ELSE NULL
+        END                                              AS window_end,
 
-        -- ── Cột phân vùng: Trade Date ─────────────────────────────────────
-        -- Trích xuất DATE từ timestamp để Power BI filter theo ngày.
-        -- Quan trọng: Gold table partition by (symbol, dt), nên WHERE trade_date = X
-        -- trong Power BI sẽ kích hoạt Trino partition pruning -> query nhanh hơn nhiều.
-        DATE(window_start)                               AS trade_date
+        -- === Partition: Trade Date ===========================================
+        -- Use candle_date from Gold directly (already a DATE, computed by PySpark).
+        -- Enables Trino partition pruning when Power BI filters by date.
+        candle_date                                      AS trade_date,
+
+        -- === Metadata ========================================================
+        processing_timestamp
 
     FROM source
     WHERE
-        -- Lọc dữ liệu bất thường: window_start không được trong tương lai.
-        -- Clock skew tối đa chấp nhận được là 10 phút (để tránh false filter
-        -- do timezone difference giữa Binance server và GCS).
-        window_start <= (NOW() + INTERVAL '10' MINUTE)
+        -- Filter anomalous data: candle_time must not be in the future.
+        -- Allow 10-minute clock skew buffer (timezone diff between Binance and GCS).
+        candle_time <= (NOW() + INTERVAL '10' MINUTE)
 )
 
 SELECT * FROM enriched

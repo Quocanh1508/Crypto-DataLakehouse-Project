@@ -3,99 +3,105 @@ version: 2
 # =============================================================================
 # models/staging/schema.yml
 # =============================================================================
-# File này khai báo metadata và tests cho các staging models.
+# Tests and documentation for the stg_gold_ohlcv staging model.
 #
-# Tại sao cần schema.yml cho staging?
-#   1. dbt đọc file này để tự động generate SQL tests
-#   2. dbt docs hiển thị description của từng cột (documentation tự động)
-#   3. Central place để quản lý chất lượng dữ liệu theo từng cột
-#
-# Convention dbt tests:
-#   - not_null          : cột không được có giá trị NULL
-#   - unique            : mỗi giá trị phải xuất hiện đúng 1 lần
-#   - accepted_values   : cột chỉ chứa các giá trị trong danh sách cho trước
-#   - relationships     : foreign key constraint
-#   - assert_high_gte_low : custom generic test (tự viết trong tests/generic/)
-#
-# Convention dbt: test PASS = query trả về 0 rows
-#                 test FAIL = query trả về > 0 rows
+# Columns tested here match the OUTPUT of stg_gold_ohlcv.sql,
+# which transforms the raw Gold table columns into analysis-ready format.
 # =============================================================================
 
 models:
   - name: stg_gold_ohlcv
     description: >
-      Staging view: Đọc trực tiếp từ Gold OHLCV table (delta.default.gold_ohlcv),
-      chuẩn hoá kiểu dữ liệu (cast Decimal -> Double), thêm các cột phụ trợ
-      (candle_range, typical_price, window_end, trade_date), và lọc bỏ các row
-      có timestamp trong tương lai.
-      Đây là VIEW trên Trino, không ghi data ra storage.
+      Staging view on top of Gold OHLCV table (delta.default.gold_ohlcv).
+      Standardizes data types (cast to DOUBLE), derives helper columns
+      (candle_range, typical_price, window_end, window_minutes),
+      and filters out future timestamps. This is a VIEW on Trino.
 
     columns:
 
       - name: symbol
-        description: "Cặp giao dịch Binance USDT, ví dụ BTCUSDT, ETHUSDT."
+        description: "Binance USDT trading pair, e.g. BTCUSDT, ETHUSDT."
         tests:
           - not_null
-          - dbt_utils.not_empty_string   # Không cho phép symbol = ""
+          - dbt_utils.not_empty_string
 
-      - name: window_start
-        description: "Thời điểm bắt đầu của nến (UTC timestamp)."
+      - name: candle_time
+        description: "Start timestamp of the candle window (UTC)."
         tests:
           - not_null
 
-      - name: window_minutes
-        description: "Độ dài nến: 1 hoặc 5 phút."
+      - name: candle_duration
+        description: "Original duration string from Gold: '1 minute' or '5 minutes'."
         tests:
           - not_null
           - accepted_values:
-              values: [1, 5]   # Chỉ cho phép 2 giá trị này
+              values: ["1 minute", "5 minutes"]
+
+      - name: window_minutes
+        description: "Integer minutes derived from candle_duration: 1 or 5."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 5]
+              quote: false
 
       - name: open
-        description: "Giá mở cửa của nến (đã cast sang DOUBLE)."
+        description: "Opening price of the candle (cast to DOUBLE)."
         tests:
           - not_null
 
       - name: high
-        description: "Giá cao nhất trong nến (đã cast sang DOUBLE)."
+        description: "Highest price in the candle (cast to DOUBLE)."
         tests:
           - not_null
-          # Custom generic test: high PHẢI >= low, không ngoại lệ
-          # Test fail nghĩa là Gold layer tính toán sai aggregate
+          # Custom generic test: high MUST >= low, no exceptions
           - assert_high_gte_low:
               column_high: high
               column_low: low
 
       - name: low
-        description: "Giá thấp nhất trong nến (đã cast sang DOUBLE)."
+        description: "Lowest price in the candle (cast to DOUBLE)."
         tests:
           - not_null
 
       - name: close
-        description: "Giá đóng cửa của nến (đã cast sang DOUBLE)."
+        description: "Closing price of the candle (cast to DOUBLE)."
         tests:
           - not_null
 
       - name: volume
-        description: "Tổng khối lượng giao dịch trong nến (đã cast sang DOUBLE)."
+        description: "Total quantity traded in the candle (cast to DOUBLE)."
         tests:
           - not_null
 
-      - name: trade_count
-        description: "Số giao dịch tick tạo nên nến. Cho phép NULL nếu Gold không tính."
+      - name: tick_count
+        description: "Number of individual trades in this candle. May be NULL if Gold did not compute."
 
       - name: candle_range
         description: >
-          Biên độ dao động = high - low. Luôn >= 0.
-          Tính tại staging để tái sử dụng ở mart mà không compute lại.
+          Price range = high - low. Always >= 0.
+          Computed in staging for reuse in mart without recomputing.
 
       - name: typical_price
         description: >
-          (high + low + close) / 3. Dùng để tính VWAP tại mart layer.
+          (high + low + close) / 3. Used to compute VWAP in mart layer.
 
       - name: window_end
-        description: "Timestamp kết thúc nến = window_start + window_minutes."
+        description: "End timestamp of candle = candle_time + duration."
 
       - name: trade_date
         description: >
-          DATE của window_start. Dùng cho partition pruning khi Power BI
-          filter theo ngày (WHERE trade_date = ...).
+          DATE from candle_date (Gold partition column).
+          Used for partition pruning when Power BI filters by date.
+
+      - name: ma_7
+        description: "Moving Average 7 periods (from Gold). NULL for first 6 candles."
+
+      - name: ma_20
+        description: "Moving Average 20 periods (from Gold). NULL for first 19 candles."
+
+      - name: ma_50
+        description: "Moving Average 50 periods (from Gold). NULL for first 49 candles."
+
+      - name: processing_timestamp
+        description: "ISO 8601 timestamp of when the Gold batch job ran."

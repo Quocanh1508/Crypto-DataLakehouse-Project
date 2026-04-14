@@ -3,111 +3,125 @@ version: 2
 # =============================================================================
 # sources.yml
 # =============================================================================
-# "Source" trong dbt là cách khai báo bảng KHÔNG do bạn tự tạo —
-# nó đến từ hệ thống upstream (ở đây là Gold layer của Teammate 1).
+# Khai bao source cho Gold OHLCV table tu silver_to_gold.py (Teammate 1).
 #
-# Tại sao cần khai báo source thay vì hardcode tên bảng trong SQL?
-#   1. dbt tự tạo lineage graph: biết models nào phụ thuộc vào bảng nào
-#   2. Có thể test trực tiếp trên source (not_null, accepted_values...)
-#   3. Khi bảng thay tên/dời schema, chỉ sửa 1 nơi duy nhất ở đây
-#   4. dbt docs generate hiển thị description của từng cột
+# Schema mapping (tu silver_to_gold.py):
+#   silver_to_gold.py output -> Trino column -> dbt source column
+#   symbol                  -> symbol        -> symbol
+#   candle_time             -> candle_time    -> candle_time
+#   candle_date             -> candle_date    -> candle_date    (partition)
+#   candle_duration         -> candle_duration-> candle_duration ("1 minute"/"5 minutes")
+#   open/high/low/close     -> same           -> same
+#   volume                  -> volume         -> volume
+#   tick_count              -> tick_count     -> tick_count
+#   ma_7/ma_20/ma_50        -> same           -> same (Moving Averages)
+#   processing_timestamp    -> same           -> same
 #
-# Cách dùng trong SQL model:
-#   {{ source('gold', 'gold_ohlcv') }}
-#   -> dbt tự resolve thành: delta.default.gold_ohlcv
-#
-# Mapping:
-#   source name 'gold'   -> database=delta, schema=default trong profiles.yml
-#   table name 'gold_ohlcv' -> tên bảng thật trong Trino
+# Storage: gs://crypto-lakehouse-group8/gold (Delta Lake on GCS)
+# Partitioned by: (symbol, candle_date)
 # =============================================================================
 
 sources:
   - name: gold
-    database: delta          # Tên catalog Trino (delta.properties)
-    schema: default          # Schema trong Delta catalog (Hive Metastore)
+    database: delta          # Trino catalog name (delta.properties)
+    schema: default          # Schema in Delta catalog (Hive Metastore)
     description: >
-      Gold layer OHLCV aggregates được tạo bởi Teammate 1 (silver_to_gold.py).
-      Chứa nến giá 1-phút và 5-phút cho Top-50 Binance USDT pairs.
-      Được ghi vào Google Cloud Storage tại gs://crypto-lakehouse-group8/gold/
-      dưới dạng Delta Lake format, đọc qua Trino catalog 'delta'.
+      Gold layer OHLCV aggregates from silver_to_gold.py (Teammate 1).
+      Contains 1-minute and 5-minute candles for Binance USDT pairs.
+      Stored in GCS at gs://crypto-lakehouse-group8/gold/ as Delta Lake format.
+      Read via Trino catalog 'delta' through Hive Metastore.
 
-    # Freshness check: cảnh báo nếu data Gold quá cũ (Airflow chưa chạy)
+    # Freshness: warn if Gold data is stale (Airflow job not running)
     freshness:
-      warn_after:  {count: 1, period: hour}    # cảnh báo sau 1 giờ không có data mới
-      error_after: {count: 3, period: hour}    # lỗi sau 3 giờ không có data mới
-    loaded_at_field: window_start              # dbt dùng cột này để tính freshness
+      warn_after:  {count: 1, period: hour}
+      error_after: {count: 3, period: hour}
+    loaded_at_field: candle_time
 
     tables:
       - name: gold_ohlcv
         description: >
-          Bảng OHLCV (Open/High/Low/Close/Volume) được aggregate từ Silver trades.
-          Mỗi row là 1 nến giá cho 1 symbol trong 1 khoảng thời gian (1 phút hoặc 5 phút).
-          Bảng được partition by (symbol, window_minutes, dt) để Trino prune partitions
-          khi query theo symbol + ngày, tránh full scan.
+          OHLCV (Open/High/Low/Close/Volume) candles aggregated from Silver ticks.
+          Each row = 1 candle for 1 symbol over 1 time window (1-min or 5-min).
+          Partitioned by (symbol, candle_date) for Trino partition pruning.
 
         columns:
           - name: symbol
             description: >
-              Cặp giao dịch Binance, ví dụ BTCUSDT, ETHUSDT, BNBUSDT.
-              Luôn là chữ HOA. Chỉ bao gồm các pair kết thúc bằng USDT.
+              Binance trading pair, e.g. BTCUSDT, ETHUSDT, BNBUSDT.
+              Always UPPERCASE. Only USDT-denominated pairs.
             tests:
               - not_null
               - dbt_utils.not_empty_string
 
-          - name: window_start
+          - name: candle_time
             description: >
-              Timestamp UTC bắt đầu của nến giá.
-              Ví dụ: nến 1-phút bắt đầu lúc 10:05:00 UTC.
+              UTC timestamp marking the START of the candle window.
+              For 1-min candle: e.g. 10:05:00 means the candle covers 10:05:00 - 10:05:59.
             tests:
               - not_null
 
-          - name: window_minutes
+          - name: candle_date
             description: >
-              Độ dài của nến tính bằng phút. Chỉ có 2 giá trị hợp lệ: 1 hoặc 5.
-              Giá trị 1 = nến 1 phút (high frequency).
-              Giá trị 5 = nến 5 phút (trend overview).
+              DATE extracted from candle_time. Used as partition column in Delta Lake.
+              Enables Trino partition pruning when filtering by date.
+            tests:
+              - not_null
+
+          - name: candle_duration
+            description: >
+              Duration of the candle as a string: "1 minute" or "5 minutes".
+              Set by silver_to_gold.py via F.lit(window_duration).
             tests:
               - not_null
               - accepted_values:
-                  values: [1, 5]
+                  values: ["1 minute", "5 minutes"]
 
           - name: open
-            description: "Giá giao dịch ĐẦUT TIÊN trong khoảng thời gian của nến."
+            description: "First trade price in the candle window."
             tests:
               - not_null
 
           - name: high
-            description: "Giá giao dịch CAO NHẤT trong khoảng thời gian của nến."
+            description: "Highest trade price in the candle window."
             tests:
               - not_null
 
           - name: low
-            description: "Giá giao dịch THẤP NHẤT trong khoảng thời gian của nến."
+            description: "Lowest trade price in the candle window."
             tests:
               - not_null
 
           - name: close
-            description: "Giá giao dịch CUỐI CÙNG trong khoảng thời gian của nến."
+            description: "Last trade price in the candle window."
             tests:
               - not_null
 
           - name: volume
             description: >
-              Tổng khối lượng giao dịch (tính bằng đơn vị coin, không phải USDT).
-              Ví dụ: 1.234 BTC được giao dịch trong nến này.
+              Total quantity traded in the candle (in coin units, not USDT).
+              E.g. 1.234 BTC were traded in this candle.
             tests:
               - not_null
 
-          - name: trade_count
-            description: "Số lượng tick giao dịch riêng lẻ tạo nên nến này."
+          - name: tick_count
+            description: "Number of individual trades aggregated into this candle."
 
-          - name: sma_5
+          - name: ma_7
             description: >
-              Simple Moving Average 5 kỳ của giá close.
-              Tính tại lớp Gold bằng window function.
-              Null cho 4 nến đầu tiên của mỗi symbol (chưa đủ lịch sử).
+              Moving Average of close price over 7 periods.
+              NULL for the first 6 candles of each symbol (not enough history).
 
-          - name: sma_20
+          - name: ma_20
             description: >
-              Simple Moving Average 20 kỳ của giá close.
-              Null cho 19 nến đầu tiên của mỗi symbol.
+              Moving Average of close price over 20 periods.
+              NULL for the first 19 candles of each symbol.
+
+          - name: ma_50
+            description: >
+              Moving Average of close price over 50 periods.
+              NULL for the first 49 candles of each symbol.
+
+          - name: processing_timestamp
+            description: >
+              ISO 8601 timestamp of when silver_to_gold.py processed this batch.
+              Useful for debugging data freshness and pipeline latency.

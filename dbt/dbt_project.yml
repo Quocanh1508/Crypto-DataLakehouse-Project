@@ -11,9 +11,9 @@
 #       View không ghi data ra storage, chỉ là "alias" cho 1 câu SQL.
 #       Lý do: staging chỉ là bước làm sạch trung gian, không cần persist.
 #
-#   - marts/   -> materialized: table
-#       Table ghi kết quả thật vào Trino/Delta theo format Parquet.
-#       Lý do: Power BI kết nối bảng này, cần query nhanh, không recompute.
+#   - marts/   -> materialized: view (local dev)
+#       View trên Trino vì Delta Lake trên S3 không hỗ trợ RENAME TABLE.
+#       Trên production (HDFS/GCS), có thể đổi sang materialized: table.
 #
 # Profile 'crypto_lakehouse' phải tồn tại trong ~/.dbt/profiles.yml
 # (xem profiles_template.yml trong thư mục này để biết cách tạo)
@@ -52,6 +52,7 @@ models:
       +schema: staging          # Tạo view trong schema 'staging'
 
     marts:
-      # marts = Trino table thật, Power BI đọc trực tiếp từ đây
-      +materialized: table
-      +schema: marts            # Tạo table trong schema 'marts'
+      # marts = view cho local dev (Delta Lake trên S3 không hỗ trợ RENAME TABLE)
+      # Trên production (HDFS), đổi lại thành +materialized: table
+      +materialized: view
+      +schema: marts            # Tạo view trong schema 'marts'
