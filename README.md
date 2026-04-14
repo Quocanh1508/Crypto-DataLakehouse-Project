@@ -70,11 +70,11 @@ Data flows through a three-tier **Medallion Architecture**:
 [EXTERNAL SOURCES]                     [INGESTION LAYER - Phase 2]
        │
  ┌────────────┐                         ┌──────────────────────────────────────────────┐
- │ Binance WS ├─────(Top 50 Trades)────►│ Python Stream Producer (rel, auto-retry)   │
+ │ Binance WS ├─────(Top 10 Trades)────►│ Python Stream Producer (rel, auto-retry)   │
  └────────────┘                         └──────────────────────┬───────────────────────┘
        │                                                       │ (JSON, real-time)
  ┌────────────┐                         ┌──────────────────────▼───────────────────────┐
- │Binance REST├─────(Top 50 Klines)────►│ Apache Kafka (Topic: crypto_trades_raw)      │
+ │Binance REST├─────(Top 10 Klines)────►│ Apache Kafka (Topic: crypto_trades_raw)      │
  └────────────┘                         │ (Managed by Zookeeper)                       │
                                         └──────────────────────┬───────────────────────┘
                                                                │
