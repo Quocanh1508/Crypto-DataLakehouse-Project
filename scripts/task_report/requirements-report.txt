@@ -1,0 +1,4 @@
+# Báo cáo PDF + Playwright (tách khỏi requirements Spark)
+playwright>=1.40.0
+reportlab>=4.0.0
+pillow>=10.0.0

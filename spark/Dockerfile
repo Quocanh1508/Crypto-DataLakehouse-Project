@@ -37,6 +37,13 @@ RUN curl -sL \
 # Install dos2unix to fix Windows line endings (CRLF → LF)
 RUN apt-get update && apt-get install -y dos2unix && rm -rf /var/lib/apt/lists/*
 
+# Prometheus JMX exporter (Spark Master :9108, Worker :9109 — cấu hình trong start-spark.sh)
+RUN mkdir -p /opt/jmx && \
+    curl -fsSL \
+    "https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/0.20.0/jmx_prometheus_javaagent-0.20.0.jar" \
+    -o /opt/jmx/jmx_prometheus_javaagent.jar
+COPY jmx/jmx-config.yaml /opt/jmx/jmx-config.yaml
+
 # Copy our custom startup script
 COPY start-spark.sh /
 # Convert CRLF to LF (fix Windows line ending issues)

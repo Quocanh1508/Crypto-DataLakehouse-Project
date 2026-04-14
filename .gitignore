@@ -127,3 +127,4 @@ node_modules/
 secrets/
 *.json.key
 service-account*.json
+reports/

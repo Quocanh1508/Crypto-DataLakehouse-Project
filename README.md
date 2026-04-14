@@ -236,7 +236,7 @@ Spark Batch Job
 | **Kafka Connect** | `kafka-connect` | 8083 | 1 GB | HTTP source connector |
 | **PostgreSQL** | `postgres` | 5432 | 512 MB | Hive Metastore backend |
 | **Hive Metastore** | `hive-metastore` | 9083 | 512 MB | Table catalog for Trino + Spark |
-| **Trino** | `trino` | 8080 | 2 GB | Federated SQL query engine |
+| **Trino** | `trino` | 18080 (host → 8080 trong container) | 2 GB | Federated SQL query engine |
 | **Spark Master** | `spark-master` | 7077, 8082 (UI) | 1 GB | Cluster manager |
 | **Spark Worker** | `spark-worker` | — | 2 GB | 2 cores, 1.5 GB executor memory |
 
@@ -285,7 +285,7 @@ docker ps
 | Service | URL / Check | Expected Result |
 |---|---|---|
 | **MinIO Console** | [http://localhost:9001](http://localhost:9001) (`admin` / `admin123`) | 5 buckets: bronze, silver, gold, checkpoints, raw-batch |
-| **Trino UI** | [http://localhost:8080](http://localhost:8080) | Query editor accessible, 0 running queries |
+| **Trino UI** | [http://localhost:18080](http://localhost:18080) | Query editor accessible, 0 running queries |
 | **Spark Master UI** | [http://localhost:8082](http://localhost:8082) | 1 worker registered, status ALIVE |
 | **Kafka** | `docker logs kafka \| tail -5` | `started (kafka.server.KafkaServer)` |
 | **Hive Metastore** | `docker logs hive-metastore \| tail -5` | `Starting Hive Metastore Server` |
@@ -377,7 +377,7 @@ docker run --rm --network finalproject_lakehouse-net \
 
 ### Phase 4 – Query with Trino
 
-Navigate to [http://localhost:8080](http://localhost:8080) and run SQL:
+Navigate to [http://localhost:18080](http://localhost:18080) and run SQL:
 
 ```sql
 -- List all Delta Lake tables

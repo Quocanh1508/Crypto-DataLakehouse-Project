@@ -152,10 +152,12 @@ services:
     mem_limit: 2g
     depends_on:
       - hive-metastore
+    # Host 8080 thường bị MiniTool ShadowMaker (MTAgentService) chiếm — map ra 18080
     ports:
-      - "8080:8080"
+      - "18080:8080"
     volumes:
       - ./trino/catalog:/etc/trino/catalog
+      - ./trino/config.properties:/etc/trino/config.properties:ro
     networks:
       - lakehouse-net
 
@@ -176,6 +178,7 @@ services:
     ports:
       - "7077:7077"
       - "8082:8080"   # Spark Web UI (8080 is taken by Trino)
+      - "9108:9108"   # JMX Prometheus (Master)
     networks:
       - lakehouse-net
 
@@ -197,6 +200,8 @@ services:
     volumes:
       - "${APPDATA}/gcloud:/home/spark/.config/gcloud:ro"
       - "./processing:/processing"
+    ports:
+      - "9109:9109"   # JMX Prometheus (Worker)
     networks:
       - lakehouse-net
 
@@ -257,6 +262,80 @@ services:
     networks:
       - lakehouse-net
 
+  # ── Monitoring (Prometheus + Grafana) ─────────────────────────────────────────
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: kafka-exporter
+    mem_limit: 128m
+    command:
+      - --kafka.server=kafka:29092
+    ports:
+      - "9308:9308"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - lakehouse-net
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres-exporter
+    mem_limit: 128m
+    environment:
+      DATA_SOURCE_NAME: postgresql://hive:hivepassword@postgres:5432/metastore?sslmode=disable
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - lakehouse-net
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: prometheus
+    mem_limit: 512m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - trino
+      - kafka-exporter
+      - postgres-exporter
+    networks:
+      - lakehouse-net
+
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: grafana
+    mem_limit: 512m
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - lakehouse-net
+
 networks:
   lakehouse-net:
     driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:
