@@ -21,14 +21,20 @@ spark = (
 )
 spark.sparkContext.setLogLevel("ERROR")
 
+bronze_path = "gs://crypto-lakehouse-group8/bronze"
 silver_path = "gs://crypto-lakehouse-group8/silver"
+gold_path   = "gs://crypto-lakehouse-group8/gold"
+
 try:
-    df = spark.read.format("delta").load(silver_path)
-    count = df.count()
+    bronze_count = spark.read.format("delta").load(bronze_path).count()
+    silver_count = spark.read.format("delta").load(silver_path).count()
+    gold_count   = spark.read.format("delta").load(gold_path).count()
     print("="*60)
-    print(f"✅ CURRENT SILVER TABLE ROW COUNT: {count:,}")
+    print(f"🥉 BRONZE TABLE ROW COUNT: {bronze_count:,}")
+    print(f"🥈 SILVER TABLE ROW COUNT: {silver_count:,}")
+    print(f"🥇 GOLD TABLE ROW COUNT:   {gold_count:,}")
     print("="*60)
 except Exception as e:
-    print(f"Error reading silver: {e}")
+    print(f"Error reading tables: {e}")
 
 spark.stop()

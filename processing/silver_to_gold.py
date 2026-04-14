@@ -79,7 +79,6 @@ def create_spark() -> SparkSession:
         .config("spark.delta.logStore.gs.impl", "io.delta.storage.GCSLogStore")
         # ── Performance tuning for cluster mode ────────────────────────────
         .config("spark.driver.memory",   "2g")
-        .config("spark.sql.shuffle.partitions", "8")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -119,7 +118,7 @@ def read_silver(spark: SparkSession) -> DataFrame:
         .withColumn("quantity", F.col("quantity_decimal").cast("double"))
     )
     
-    log.info("Silver table loaded: %d rows", df.count())
+    log.info("Silver table metadata loaded successfully.")
     return df
 
 
@@ -167,7 +166,7 @@ def build_ohlcv_candles(df: DataFrame, window_duration: str) -> DataFrame:
         .withColumn("candle_duration", F.lit(window_duration))
     )
     
-    log.info("Generated %d candles", ohlcv.count())
+    log.info("Generated %s candles formulation in DAG", window_duration)
     return ohlcv
 
 
@@ -258,7 +257,7 @@ def prepare_gold_table(df_1m: DataFrame, df_5m: DataFrame) -> DataFrame:
     
     gold_df = gold_df.select(column_order)
     
-    log.info("Gold table prepared: %d rows", gold_df.count())
+    log.info("Unified Gold table schema and DAG prepared")
     return gold_df
 
 

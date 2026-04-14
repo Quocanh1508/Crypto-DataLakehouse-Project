@@ -48,7 +48,7 @@ run_silver = BashOperator(
             --conf "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension" \
             --conf "spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog" \
             --conf "spark.delta.logStore.gs.impl=io.delta.storage.GCSLogStore" \
-            --conf "spark.sql.shuffle.partitions=2" \
+            --conf "spark.sql.shuffle.partitions=16" \
             --conf "spark.cores.max=1" \
             /processing/bronze_to_silver.py
 

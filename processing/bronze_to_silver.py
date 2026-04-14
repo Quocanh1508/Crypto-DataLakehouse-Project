@@ -296,9 +296,8 @@ def main():
         bronze_stream = (
             spark.readStream
             .format("delta")
-            # Tune payload size. 8m prevents 512m driver from OOMing
-            # while still processing around ~500k rows per batch
-            .option("maxBytesPerTrigger", "8m") 
+            # Balanced payload size: 128m processes ~2-3 million rows per batch safely in 768m RAM
+            .option("maxBytesPerTrigger", "128m")
             .load(BRONZE_PATH)
         )
 
