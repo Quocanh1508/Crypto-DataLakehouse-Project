@@ -127,3 +127,16 @@ node_modules/
 secrets/
 *.json.key
 service-account*.json
+node_modules
+node_modules
+node_modules
+node_modules
+node_modules
+node_modules
+
+# Local virtual environments (all variants)
+.venv*/
+
+# Trained model binaries and ML runtime artifacts
+ML/models/saved/
+ML/data/cached_ohlcv.csv

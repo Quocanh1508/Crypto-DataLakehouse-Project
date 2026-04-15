@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto ML Dashboard — Real-time Predictions</title>
+    <meta name="description" content="Real-time crypto price prediction dashboard with XGBoost, LSTM, and Anomaly Detection">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- ── TOP BAR ─────────────────────────────────────────────── -->
+    <header class="top-bar">
+        <div class="logo">
+            <span class="logo-icon">◈</span>
+            <h1>Crypto ML Dashboard</h1>
+        </div>
+        <div class="live-ticker" id="liveTicker">
+            <span class="ticker-symbol">BTCUSDT</span>
+            <span class="ticker-price" id="tickerPrice">--</span>
+            <span class="ticker-change" id="tickerChange">--</span>
+            <span class="pulse-dot"></span>
+            <span class="ticker-label">LIVE</span>
+        </div>
+        <div class="header-meta">
+            <span id="lastUpdate">Chưa cập nhật</span>
+        </div>
+    </header>
+
+    <!-- ── MAIN GRID ───────────────────────────────────────────── -->
+    <main class="dashboard-grid">
+
+        <!-- ── PANEL 1: Classification (XGBoost + LightGBM) ──── -->
+        <section class="card card-wide" id="classificationPanel">
+            <div class="card-header">
+                <h2>🌲 Phân loại xu hướng — XGBoost & LightGBM</h2>
+                <span class="badge badge-blue">Classification</span>
+            </div>
+            <div class="card-body">
+                <div class="prediction-row">
+                    <!-- XGBoost Signal -->
+                    <div class="signal-box" id="xgbSignalBox">
+                        <div class="signal-label">XGBoost</div>
+                        <div class="signal-value" id="xgbSignal">--</div>
+                        <div class="signal-prob" id="xgbProb">Probability: --</div>
+                    </div>
+                    <!-- LightGBM Signal -->
+                    <div class="signal-box" id="lgbmSignalBox">
+                        <div class="signal-label">LightGBM</div>
+                        <div class="signal-value" id="lgbmSignal">--</div>
+                        <div class="signal-prob" id="lgbmProb">Probability: --</div>
+                    </div>
+                    <!-- Metrics Comparison -->
+                    <div class="metrics-table-wrap">
+                        <table class="metrics-table" id="metricsTable">
+                            <thead>
+                                <tr><th>Metric</th><th>XGBoost</th><th>LightGBM</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr><td>Accuracy</td><td id="xgbAcc">--</td><td id="lgbmAcc">--</td></tr>
+                                <tr><td>Precision</td><td id="xgbPrec">--</td><td id="lgbmPrec">--</td></tr>
+                                <tr><td>Recall</td><td id="xgbRec">--</td><td id="lgbmRec">--</td></tr>
+                                <tr><td>F1-Score</td><td id="xgbF1">--</td><td id="lgbmF1">--</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <!-- Feature Importance Chart -->
+                <div class="chart-container chart-half">
+                    <h3>Feature Importance</h3>
+                    <canvas id="featureChart"></canvas>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── PANEL 2: LSTM Price Prediction ────────────────── -->
+        <section class="card card-wide" id="lstmPanel">
+            <div class="card-header">
+                <h2>🧠 Dự đoán giá — LSTM Neural Network</h2>
+                <span class="badge badge-purple">Regression</span>
+            </div>
+            <div class="card-body">
+                <div class="prediction-row">
+                    <div class="stat-box">
+                        <div class="stat-label">Giá hiện tại</div>
+                        <div class="stat-value" id="lstmCurrent">--</div>
+                    </div>
+                    <div class="stat-box highlight" id="lstmPredBox">
+                        <div class="stat-label">Dự đoán tiếp theo</div>
+                        <div class="stat-value" id="lstmPredicted">--</div>
+                        <div class="stat-sub" id="lstmChangePct">--</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Val MSE</div>
+                        <div class="stat-value stat-small" id="lstmMSE">--</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Val RMSE</div>
+                        <div class="stat-value stat-small" id="lstmRMSE">--</div>
+                    </div>
+                </div>
+                <!-- Actual vs Predicted Chart -->
+                <div class="chart-container">
+                    <h3>Actual vs Predicted (Last 100 candles)</h3>
+                    <canvas id="lstmChart"></canvas>
+                </div>
+                <!-- LSTM Loss Chart -->
+                <div class="chart-container chart-half">
+                    <h3>Training Loss</h3>
+                    <canvas id="lstmLossChart"></canvas>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── PANEL 3: Isolation Forest ─────────────────────── -->
+        <section class="card card-wide" id="anomalyPanel">
+            <div class="card-header">
+                <h2>🔍 Phát hiện bất thường — Isolation Forest</h2>
+                <span class="badge badge-red">Anomaly Detection</span>
+            </div>
+            <div class="card-body">
+                <div class="prediction-row">
+                    <div class="stat-box" id="anomalyStatusBox">
+                        <div class="stat-label">Trạng thái hiện tại</div>
+                        <div class="stat-value" id="anomalyStatus">--</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Anomaly Score</div>
+                        <div class="stat-value stat-small" id="anomalyScore">--</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Tổng anomalies</div>
+                        <div class="stat-value stat-small" id="totalAnomalies">--</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Tỷ lệ</div>
+                        <div class="stat-value stat-small" id="anomalyRate">--</div>
+                    </div>
+                </div>
+                <!-- Anomaly Scatter Chart -->
+                <div class="chart-container">
+                    <h3>Anomaly Score Timeline</h3>
+                    <canvas id="anomalyChart"></canvas>
+                </div>
+                <!-- Recent Anomalies Table -->
+                <div class="anomaly-table-wrap">
+                    <h3>Anomalies gần nhất</h3>
+                    <table class="anomaly-table" id="anomalyTable">
+                        <thead>
+                            <tr>
+                                <th>Thời gian</th>
+                                <th>Giá Close</th>
+                                <th>Volume</th>
+                                <th>Biến động %</th>
+                                <th>Score</th>
+                            </tr>
+                        </thead>
+                        <tbody id="anomalyTableBody">
+                            <tr><td colspan="5" class="empty-row">Đang tải...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── PANEL 4: Price Chart with MA ──────────────────── -->
+        <section class="card card-wide" id="pricePanel">
+            <div class="card-header">
+                <h2>📈 Biểu đồ giá & Moving Averages</h2>
+                <span class="badge badge-green">OHLCV</span>
+            </div>
+            <div class="card-body">
+                <div class="chart-container chart-full">
+                    <canvas id="priceChart"></canvas>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ── FOOTER ──────────────────────────────────────────────── -->
+    <footer class="footer">
+        <p>Crypto Data Lakehouse — Nhóm 8 | HCMUTE | Dữ liệu lớn HK2 2026</p>
+        <p>Data Pipeline: Binance → Kafka → Spark → Delta Lake (GCS) → Trino → ML</p>
+    </footer>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
