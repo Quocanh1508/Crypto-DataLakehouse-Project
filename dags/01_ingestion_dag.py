@@ -6,12 +6,15 @@ Daily Ingestion: REST API Batch → Kafka → trigger Silver
 Schedule : 08:00 UTC daily (15:00 ICT)
 Chain    : run_batch_producer → trigger_silver_pipeline
 
-Removed tasks (vs original):
-  - validate_kafka       : Kafka errors will surface naturally inside the batch
-                           producer itself. No need for a separate check gate.
-  - check_streaming_alive: WebSocket producer runs as Docker service with
-                           restart:always. Health-checking it in the pipeline
-                           only adds a success gate with no real benefit.
+Design Decisions:
+  - validate_kafka   : Removed. Kafka errors surface naturally inside the batch
+                       producer itself. No need for a separate check gate.
+  - check_streaming  : Removed. WebSocket producer runs as Docker service with
+                       restart:always. Health-checking it adds no real benefit.
+  - Network name     : Uses docker-compose default network (project-name_lakehouse-net)
+  - Volume mount     : Uses ./ingestion mounted at /app inside the container
+
+Teammate 2 (Orchestration) — Fixed hardcoded path + network name.
 """
 
 from datetime import datetime, timedelta
@@ -21,7 +24,7 @@ from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 default_args = {
     "owner": "data-engineering",
-    "retries": 1,
+    "retries": 2,
     "retry_delay": timedelta(minutes=5),
     "email_on_failure": False,
 }
@@ -39,6 +42,9 @@ dag = DAG(
 )
 
 # ── Task 1: Run batch producer (REST API klines → Kafka) ──────────────────────
+# NOTE: Uses `docker exec` to run inside the existing producer-stream container,
+#       which already has Kafka connectivity and all required packages.
+#       This avoids spinning up a new container and hardcoding host paths.
 run_batch_producer = BashOperator(
     task_id="run_batch_producer",
     bash_command="""
@@ -46,16 +52,16 @@ run_batch_producer = BashOperator(
         echo "[INGESTION] Starting REST API batch producer..."
         echo "  Fetching top 10 coins historical klines → Kafka"
 
-        docker run --rm \
-            --network finalproject_lakehouse-net \
-            -v "C:/StudyZone/BDAN/FinalProject/ingestion:/app" \
-            -e KAFKA_BOOTSTRAP_SERVERS=kafka:29092 \
-            -e KAFKA_TOPIC_RAW=crypto_trades_raw \
-            -e KAFKA_TOPIC_DLQ=crypto_trades_dlq \
-            -e BINANCE_REST_URL=https://api.binance.com \
-            -e TOP_N_COINS=10 \
-            python:3.10-slim \
-            bash -c "pip install -q kafka-python requests && python /app/producer_batch.py"
+        # Check if producer-stream container is running
+        if ! docker ps --filter "name=producer-stream" --format '{{.Names}}' | grep -q producer-stream; then
+            echo "❌ producer-stream container is not running."
+            echo "   Run: docker-compose up -d producer-stream"
+            exit 1
+        fi
+
+        # Run batch producer inside the existing producer-stream container
+        # All environment vars (KAFKA_BOOTSTRAP_SERVERS, etc.) are already set
+        docker exec -i producer-stream python producer_batch.py
 
         echo "✓ Batch ingestion complete → data now in Kafka"
     """,
