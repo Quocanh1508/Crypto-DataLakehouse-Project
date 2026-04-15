@@ -22,6 +22,12 @@ version: 2
 # =============================================================================
 
 sources:
+  # =============================================================================
+  # SOURCE 1: Local mock data (MinIO / local dev)
+  # Trino catalog: delta  →  delta.default.gold_ohlcv
+  # Data: 22 mock rows inserted by setup_and_test.ps1 STEP 6
+  # Use: dbt run / dbt test (local dev, no GCS credentials needed)
+  # =============================================================================
   - name: gold
     database: delta          # Trino catalog name (delta.properties)
     schema: default          # Schema in Delta catalog (Hive Metastore)
@@ -125,3 +131,68 @@ sources:
             description: >
               ISO 8601 timestamp of when silver_to_gold.py processed this batch.
               Useful for debugging data freshness and pipeline latency.
+
+  # =============================================================================
+  # SOURCE 2: Production GCS data (real 17k+ rows from silver_to_gold.py)
+  # Trino catalog: delta_gcs  →  delta_gcs.gcs.gold_ohlcv
+  # Data: gs://crypto-lakehouse-group8/gold/ (real Binance trades)
+  # Use: .\dbt\scripts\setup_and_test.ps1 -GCS
+  #      dbt test --select source:gold_gcs
+  # Pre-req: GCS ADC credentials at %APPDATA%\gcloud\
+  # =============================================================================
+  - name: gold_gcs
+    database: delta_gcs        # trino/catalog/delta_gcs.properties
+    schema: gcs                # Registered by setup_and_test.ps1 STEP 6b
+    description: >
+      Production Gold layer from silver_to_gold.py on GCS.
+      Contains 17k+ real OHLCV candles from Binance live data.
+      Stored at gs://crypto-lakehouse-group8/gold/ as Delta Lake.
+
+    tables:
+      - name: gold_ohlcv
+        description: >
+          Real production OHLCV (same schema as mock table).
+          17k+ rows of real Binance 1-min + 5-min candles with MA7/MA20/MA50.
+
+        columns:
+          - name: symbol
+            description: "Binance trading pair."
+            tests:
+              - not_null
+              - dbt_utils.not_empty_string
+
+          - name: candle_time
+            description: "Start timestamp of candle window (UTC)."
+            tests: [not_null]
+
+          - name: candle_date
+            description: "Partition DATE from candle_time."
+            tests: [not_null]
+
+          - name: candle_duration
+            description: "'1 minute' or '5 minutes'."
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ["1 minute", "5 minutes"]
+
+          - name: open
+            tests: [not_null]
+          - name: high
+            tests: [not_null]
+          - name: low
+            tests: [not_null]
+          - name: close
+            tests: [not_null]
+          - name: volume
+            tests: [not_null]
+          - name: tick_count
+            description: "Number of trades in candle."
+          - name: ma_7
+            description: "MA7 — NULL for first 6 candles of each symbol."
+          - name: ma_20
+            description: "MA20 — NULL for first 19 candles."
+          - name: ma_50
+            description: "MA50 — NULL for first 49 candles."
+          - name: processing_timestamp
+            description: "Batch timestamp from silver_to_gold.py."

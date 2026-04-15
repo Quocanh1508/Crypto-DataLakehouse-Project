@@ -226,6 +226,8 @@ services:
       - "8080:8080"
     volumes:
       - ./trino/catalog:/etc/trino/catalog
+      # Mount GCS ADC credentials so delta_gcs catalog can read gs:// paths
+      - "${APPDATA}/gcloud:/home/trino/.config/gcloud:ro"
     networks:
       - lakehouse-net
 

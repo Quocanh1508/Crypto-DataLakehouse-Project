@@ -372,6 +372,82 @@ INSERT INTO delta.default.gold_ohlcv VALUES
 }
 
 # ===========================================================================
+# STEP 6b: Register GCS production table (optional — skips if no GCS creds)
+# ===========================================================================
+Print-Step "STEP 6b: Register GCS Gold table (real data)"
+
+$gcsCredsPath = Join-Path $env:APPDATA "gcloud\application_default_credentials.json"
+if (-not (Test-Path $gcsCredsPath)) {
+    Print-Warn "No GCS credentials found at: $gcsCredsPath"
+    Write-Host "  Skipping GCS table registration. Using mock data only." -ForegroundColor Yellow
+    Write-Host "  To enable: run 'gcloud auth application-default login'" -ForegroundColor Cyan
+    Write-Host ""
+} else {
+    Print-OK "GCS credentials found: $gcsCredsPath"
+    try {
+        # Create schema 'gcs' in delta_gcs catalog (if not exists)
+        $createSchemaSQL = "CREATE SCHEMA IF NOT EXISTS delta_gcs.gcs"
+        Invoke-TrinoSQL -SQL $createSchemaSQL -Label "CREATE SCHEMA delta_gcs.gcs"
+
+        # Register the GCS Gold table using Delta Lake register_table procedure.
+        # NOTE: Delta Lake connector does NOT use CREATE TABLE WITH (format=...).
+        #       It reads the Delta transaction log directly at the given location.
+        #       Use CALL system.register_table() for existing Delta tables.
+        $dropGCSSQL = "CALL delta_gcs.system.unregister_table(schema_name => 'gcs', table_name => 'gold_ohlcv')"
+        try {
+            Invoke-TrinoSQL -SQL $dropGCSSQL -Label "UNREGISTER GCS table (if stale)" | Out-Null
+        } catch {
+            # Table may not exist yet, that's fine
+        }
+
+        $registerGCSSQL = @'
+CALL delta_gcs.system.register_table(
+    schema_name   => 'gcs',
+    table_name    => 'gold_ohlcv',
+    table_location => 'gs://crypto-lakehouse-group8/gold'
+)
+'@
+        Invoke-TrinoSQL -SQL $registerGCSSQL -Label "REGISTER GCS gold_ohlcv (Delta)"
+        Print-OK "GCS table registered at delta_gcs.gcs.gold_ohlcv"
+
+
+        # Count real rows
+        $gcsCount = Invoke-TrinoSQL -SQL "SELECT COUNT(*) FROM delta_gcs.gcs.gold_ohlcv" -Label "COUNT GCS rows"
+        if ($gcsCount -and $gcsCount.data) {
+            $realRows = $gcsCount.data[0][0]
+            Print-OK "Real GCS data: $realRows rows in gold_ohlcv"
+
+            if ([int]$realRows -gt 1000) {
+                Write-Host "  >> Real production data detected! ($realRows rows)" -ForegroundColor Green
+            }
+        }
+
+        # Run dbt source tests on GCS data
+        # NOTE: Must cd to $DbtDir and set UTF8 before calling dbt (same as STEP 7)
+        Write-Host ""
+        Write-Host "  [..] Running source tests on REAL GCS data..." -ForegroundColor Cyan
+        $env:PYTHONUTF8       = "1"
+        $env:PYTHONIOENCODING = "utf-8"
+        Push-Location $DbtDir
+        & $VenvDbt test --select "source:gold_gcs" 2>&1
+        $gcsTestOk = $LASTEXITCODE -eq 0
+        Pop-Location
+        if ($gcsTestOk) {
+            Print-OK "dbt test (GCS source): PASS on real data"
+        } else {
+            Print-Warn "dbt test (GCS source): some failures on real data (check output above)"
+        }
+
+    } catch {
+        Print-Warn "GCS table registration failed: $_"
+        Write-Host "  Possible causes:" -ForegroundColor Yellow
+        Write-Host "  - GCS credentials expired (run: gcloud auth application-default login)" -ForegroundColor Yellow
+        Write-Host "  - delta_gcs catalog not loaded (restart Trino after docker-compose up)" -ForegroundColor Yellow
+        Write-Host "  Continuing with mock data tests..." -ForegroundColor Yellow
+    }
+}
+
+# ===========================================================================
 # STEP 7: Run dbt pipeline
 # ===========================================================================
 Print-Step "STEP 7: Run dbt pipeline"
