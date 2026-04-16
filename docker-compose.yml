@@ -223,7 +223,8 @@ services:
     depends_on:
       - hive-metastore
     ports:
-      - "8080:8080"
+      # Host 18080 (tránh xung đột 8080 trên máy); trong container Trino vẫn :8080
+      - "18080:8080"
     volumes:
       - ./trino/catalog:/etc/trino/catalog
       # Mount GCS ADC credentials so delta_gcs catalog can read gs:// paths
@@ -247,7 +248,7 @@ services:
       - "./processing:/processing"
     ports:
       - "7077:7077"
-      - "8082:8080"   # Spark Web UI (8080 is taken by Trino)
+      - "8082:8080"   # Spark Web UI → http://localhost:8082
     networks:
       - lakehouse-net
 

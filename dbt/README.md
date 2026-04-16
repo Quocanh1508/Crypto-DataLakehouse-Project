@@ -8,7 +8,7 @@
 
 **Vai trò:** Teammate 2 (Analytics Engineer) — Phase 6 & 7  
 **Stack:** dbt Core 1.8 + dbt-trino adapter  
-**Query Engine:** Trino 432 (kết nối qua Docker port 8080)  
+**Query Engine:** Trino 432 (từ máy host: port **18080** → container 8080)  
 **Data Source:** `delta.default.gold_ohlcv` (Gold layer của Teammate 1)
 
 ---
@@ -98,7 +98,7 @@ crypto_lakehouse:
       type: trino
       method: none
       host: localhost
-      port: 8080
+      port: 18080
       database: delta
       schema: default
       threads: 4
@@ -110,7 +110,7 @@ crypto_lakehouse:
 ```bash
 docker-compose up -d trino hive-metastore postgres minio
 # Chờ khoảng 30 giây rồi test:
-curl http://localhost:8080/v1/info
+curl http://localhost:18080/v1/info
 ```
 
 ### Bước 4: Kiểm tra kết nối
@@ -233,7 +233,7 @@ Snippet cần thêm vào `docker-compose.yml`:
 A: Kiểm tra Trino container: `docker ps | grep trino`. Nếu không có → `docker-compose up -d trino`.
 
 **Q: `dbt run` chạy nhưng không thấy view/table trong Trino?**  
-A: Vào Trino UI `http://localhost:8080`, chạy: `SHOW SCHEMAS FROM delta;` và `SHOW TABLES FROM delta.marts;`
+A: Vào Trino UI `http://localhost:18080`, chạy: `SHOW SCHEMAS FROM delta;` và `SHOW TABLES FROM delta.marts;`
 
 **Q: Test `test_no_missing_1min_candles` bị timeout?**  
 A: Thêm `--exclude test_no_missing_1min_candles` khi chạy, hoặc giảm INTERVAL từ 2 giờ xuống 30 phút.

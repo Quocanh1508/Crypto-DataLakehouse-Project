@@ -9,7 +9,7 @@ log = logging.getLogger("fetch_data")
 
 # Cấu hình Trino
 TRINO_HOST = os.getenv("TRINO_HOST", "localhost")
-TRINO_PORT = int(os.getenv("TRINO_PORT", "8080"))
+TRINO_PORT = int(os.getenv("TRINO_PORT", "18080"))
 TRINO_USER = os.getenv("TRINO_USER", "admin")
 TRINO_CATALOG = os.getenv("TRINO_CATALOG", "delta_gcs") # Dùng delta_gcs catalog từ docker-compose
 TRINO_SCHEMA = os.getenv("TRINO_SCHEMA", "gcs")

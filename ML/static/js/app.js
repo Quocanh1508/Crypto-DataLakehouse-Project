@@ -1,29 +1,36 @@
 /**
- * app.js — Crypto ML Dashboard Frontend
- * ======================================
- * - Fetch data từ Flask API
- * - Render Chart.js charts
- * - SSE real-time updates mỗi 30s
+ * Crypto ML — Report UI + Chart.js (cdnjs) + FastAPI
  */
 
-// ── Chart.js defaults ───────────────────────────────────────────
-Chart.defaults.color = '#94a3b8';
-Chart.defaults.borderColor = 'rgba(99,102,241,0.1)';
-Chart.defaults.font.family = "'Inter', sans-serif";
+const CHART_COLORS = {
+    grid: 'rgba(15, 23, 42, 0.06)',
+    text: '#64748b',
+    primary: '#0078d4',
+    primaryFill: 'rgba(0, 120, 212, 0.12)',
+    secondary: '#ca5010',
+    success: '#107c10',
+    danger: '#a4262c',
+    violet: '#5c2d91',
+    grid: 'rgba(0, 0, 0, 0.06)',
+    text: '#605e5c',
+};
 
-// ── Chart instances (để update sau) ─────────────────────────────
+Chart.defaults.color = '#605e5c';
+Chart.defaults.borderColor = 'rgba(0, 0, 0, 0.06)';
+Chart.defaults.font.family = "'Segoe UI', 'Inter', system-ui, sans-serif";
+Chart.defaults.font.size = 11;
+
 let featureChart = null;
 let lstmChart = null;
 let lstmLossChart = null;
 let anomalyChart = null;
 let priceChart = null;
 
-// ── Helper: format số ───────────────────────────────────────────
 function fmt(n, decimals = 2) {
-    if (n === null || n === undefined || isNaN(n)) return '--';
+    if (n === null || n === undefined || (typeof n === 'number' && isNaN(n))) return '--';
     return Number(n).toLocaleString('en-US', {
         minimumFractionDigits: decimals,
-        maximumFractionDigits: decimals
+        maximumFractionDigits: decimals,
     });
 }
 
@@ -32,21 +39,30 @@ function fmtPrice(n) {
     return '$' + fmt(n, 2);
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 1. FETCH PREDICTIONS (real-time)
-// ══════════════════════════════════════════════════════════════════
+function setModelHints(data) {
+    const banner = document.getElementById('modelHint');
+    const lstmHint = document.getElementById('lstmChartHint');
+    const needTrain = data && (data.lstm_ready === false || data.training_metrics_ready === false);
+    if (banner) {
+        banner.hidden = !needTrain;
+    }
+    if (lstmHint) {
+        lstmHint.hidden = !(data && data.lstm_ready === false);
+    }
+}
+
 async function fetchPredictions() {
     try {
         const res = await fetch('/api/predictions');
         const data = await res.json();
         updatePredictionUI(data);
+        setModelHints(data);
     } catch (e) {
         console.warn('fetchPredictions error:', e);
     }
 }
 
 function updatePredictionUI(data) {
-    // Ticker
     const price = data.current_price;
     document.getElementById('tickerPrice').textContent = fmtPrice(price);
 
@@ -55,30 +71,36 @@ function updatePredictionUI(data) {
         const pct = data.lstm_change_pct;
         changeEl.textContent = (pct >= 0 ? '+' : '') + fmt(pct, 2) + '%';
         changeEl.className = 'ticker-change ' + (pct >= 0 ? 'up' : 'down');
+    } else {
+        changeEl.textContent = '--';
+        changeEl.className = 'ticker-change';
     }
 
-    document.getElementById('lastUpdate').textContent =
-        'Cập nhật: ' + new Date().toLocaleTimeString('vi-VN');
+    const t = new Date().toLocaleTimeString('vi-VN');
+    document.getElementById('lastUpdate').textContent = 'Cập nhật: ' + t;
+    const fp = document.getElementById('filterPaneUpdate');
+    if (fp) fp.textContent = t;
 
-    // XGBoost
     const xgbSignal = document.getElementById('xgbSignal');
     xgbSignal.textContent = data.xgboost_signal || '--';
     xgbSignal.className = 'signal-value ' + (data.xgboost_signal === 'BULLISH' ? 'bull' : 'bear');
     document.getElementById('xgbProb').textContent =
-        'Probability: ' + (data.xgboost_bull_prob !== null ? fmt(data.xgboost_bull_prob * 100, 1) + '%' : '--');
+        'Probability: ' +
+        (data.xgboost_bull_prob !== null ? fmt(data.xgboost_bull_prob * 100, 1) + '%' : '--');
     const xgbBox = document.getElementById('xgbSignalBox');
-    xgbBox.className = 'signal-box ' + (data.xgboost_signal === 'BULLISH' ? 'bullish' : 'bearish');
+    xgbBox.className =
+        'signal-box ' + (data.xgboost_signal === 'BULLISH' ? 'bullish' : 'bearish');
 
-    // LightGBM
     const lgbmSignal = document.getElementById('lgbmSignal');
     lgbmSignal.textContent = data.lgbm_signal || '--';
     lgbmSignal.className = 'signal-value ' + (data.lgbm_signal === 'BULLISH' ? 'bull' : 'bear');
     document.getElementById('lgbmProb').textContent =
-        'Probability: ' + (data.lgbm_bull_prob !== null ? fmt(data.lgbm_bull_prob * 100, 1) + '%' : '--');
+        'Probability: ' +
+        (data.lgbm_bull_prob !== null ? fmt(data.lgbm_bull_prob * 100, 1) + '%' : '--');
     const lgbmBox = document.getElementById('lgbmSignalBox');
-    lgbmBox.className = 'signal-box ' + (data.lgbm_signal === 'BULLISH' ? 'bullish' : 'bearish');
+    lgbmBox.className =
+        'signal-box ' + (data.lgbm_signal === 'BULLISH' ? 'bullish' : 'bearish');
 
-    // LSTM
     document.getElementById('lstmCurrent').textContent = fmtPrice(price);
     document.getElementById('lstmPredicted').textContent = fmtPrice(data.lstm_predicted_price);
     const changePct = document.getElementById('lstmChangePct');
@@ -86,33 +108,36 @@ function updatePredictionUI(data) {
         const pct = data.lstm_change_pct;
         changePct.textContent = (pct >= 0 ? '▲ +' : '▼ ') + fmt(pct, 4) + '%';
         changePct.className = 'stat-sub ' + (pct >= 0 ? 'up' : 'down');
+    } else {
+        changePct.textContent = '';
+        changePct.className = 'stat-sub';
     }
 
     const predBox = document.getElementById('lstmPredBox');
     if (data.lstm_predicted_price && price) {
-        predBox.style.borderColor = data.lstm_predicted_price > price
-            ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)';
+        predBox.style.borderColor =
+            data.lstm_predicted_price > price
+                ? 'rgba(5, 150, 105, 0.45)'
+                : 'rgba(220, 38, 38, 0.35)';
     }
 
-    // Anomaly
     const statusEl = document.getElementById('anomalyStatus');
     const statusBox = document.getElementById('anomalyStatusBox');
     if (data.is_anomaly) {
-        statusEl.textContent = '⚠️ ANOMALY';
-        statusEl.style.color = '#ef4444';
+        statusEl.textContent = 'ANOMALY';
+        statusEl.style.color = 'var(--danger)';
         statusBox.className = 'stat-box anomaly';
     } else {
-        statusEl.textContent = '✅ NORMAL';
-        statusEl.style.color = '#22c55e';
+        statusEl.textContent = 'NORMAL';
+        statusEl.style.color = 'var(--success)';
         statusBox.className = 'stat-box normal';
     }
     document.getElementById('anomalyScore').textContent =
-        data.anomaly_score !== null ? fmt(data.anomaly_score, 4) : '--';
+        data.anomaly_score !== null && data.anomaly_score !== undefined
+            ? fmt(data.anomaly_score, 4)
+            : '--';
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 2. TRAINING RESULTS
-// ══════════════════════════════════════════════════════════════════
 async function fetchTrainingResults() {
     try {
         const res = await fetch('/api/training-results');
@@ -120,14 +145,18 @@ async function fetchTrainingResults() {
 
         if (data.xgboost) {
             document.getElementById('xgbAcc').textContent = fmt(data.xgboost.accuracy * 100, 1) + '%';
-            document.getElementById('xgbPrec').textContent = fmt(data.xgboost.precision * 100, 1) + '%';
+            document.getElementById('xgbPrec').textContent =
+                fmt(data.xgboost.precision * 100, 1) + '%';
             document.getElementById('xgbRec').textContent = fmt(data.xgboost.recall * 100, 1) + '%';
             document.getElementById('xgbF1').textContent = fmt(data.xgboost.f1 * 100, 1) + '%';
         }
         if (data.lightgbm) {
-            document.getElementById('lgbmAcc').textContent = fmt(data.lightgbm.accuracy * 100, 1) + '%';
-            document.getElementById('lgbmPrec').textContent = fmt(data.lightgbm.precision * 100, 1) + '%';
-            document.getElementById('lgbmRec').textContent = fmt(data.lightgbm.recall * 100, 1) + '%';
+            document.getElementById('lgbmAcc').textContent =
+                fmt(data.lightgbm.accuracy * 100, 1) + '%';
+            document.getElementById('lgbmPrec').textContent =
+                fmt(data.lightgbm.precision * 100, 1) + '%';
+            document.getElementById('lgbmRec').textContent =
+                fmt(data.lightgbm.recall * 100, 1) + '%';
             document.getElementById('lgbmF1').textContent = fmt(data.lightgbm.f1 * 100, 1) + '%';
         }
         if (data.lstm) {
@@ -139,23 +168,27 @@ async function fetchTrainingResults() {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 3. FEATURE IMPORTANCE CHART
-// ══════════════════════════════════════════════════════════════════
 async function renderFeatureImportance() {
+    const emptyHint = document.getElementById('featureEmptyHint');
     try {
         const res = await fetch('/api/feature-importance');
         const data = await res.json();
 
         const xgbData = data.xgb || [];
         const lgbmData = data.lgbm || [];
-        if (xgbData.length === 0) return;
+        if (xgbData.length === 0) {
+            if (emptyHint) emptyHint.hidden = false;
+            return;
+        }
+        if (emptyHint) emptyHint.hidden = true;
 
-        const labels = xgbData.map(d => d.feature);
-        const xgbValues = xgbData.map(d => d.importance);
+        const labels = xgbData.map((d) => d.feature);
+        const xgbValues = xgbData.map((d) => d.importance);
         const lgbmMap = {};
-        lgbmData.forEach(d => { lgbmMap[d.feature] = d.importance; });
-        const lgbmValues = labels.map(l => lgbmMap[l] || 0);
+        lgbmData.forEach((d) => {
+            lgbmMap[d.feature] = d.importance;
+        });
+        const lgbmValues = labels.map((l) => lgbmMap[l] || 0);
 
         const ctx = document.getElementById('featureChart').getContext('2d');
         if (featureChart) featureChart.destroy();
@@ -168,38 +201,39 @@ async function renderFeatureImportance() {
                     {
                         label: 'XGBoost',
                         data: xgbValues,
-                        backgroundColor: 'rgba(99,102,241,0.7)',
+                        backgroundColor: 'rgba(37, 99, 235, 0.75)',
                         borderRadius: 4,
                     },
                     {
                         label: 'LightGBM',
                         data: lgbmValues,
-                        backgroundColor: 'rgba(168,85,247,0.7)',
+                        backgroundColor: 'rgba(124, 58, 237, 0.65)',
                         borderRadius: 4,
-                    }
-                ]
+                    },
+                ],
             },
             options: {
                 indexAxis: 'y',
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
-                    legend: { position: 'top' }
+                    legend: { position: 'top' },
                 },
                 scales: {
-                    x: { grid: { color: 'rgba(99,102,241,0.05)' } },
-                    y: { grid: { display: false } }
-                }
-            }
+                    x: {
+                        grid: { color: CHART_COLORS.grid },
+                        beginAtZero: true,
+                    },
+                    y: { grid: { display: false } },
+                },
+            },
         });
     } catch (e) {
         console.warn('renderFeatureImportance error:', e);
+        if (emptyHint) emptyHint.hidden = false;
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 4. LSTM ACTUAL VS PREDICTED CHART
-// ══════════════════════════════════════════════════════════════════
 async function renderLSTMChart() {
     try {
         const res = await fetch('/api/lstm-predictions');
@@ -215,10 +249,10 @@ async function renderLSTMChart() {
                 labels: data.times,
                 datasets: [
                     {
-                        label: 'Actual Price',
+                        label: 'Actual',
                         data: data.actual,
-                        borderColor: '#6366f1',
-                        backgroundColor: 'rgba(99,102,241,0.1)',
+                        borderColor: CHART_COLORS.primary,
+                        backgroundColor: CHART_COLORS.primaryFill,
                         borderWidth: 2,
                         pointRadius: 0,
                         fill: true,
@@ -227,14 +261,14 @@ async function renderLSTMChart() {
                     {
                         label: 'LSTM Predicted',
                         data: data.predicted,
-                        borderColor: '#f59e0b',
+                        borderColor: CHART_COLORS.secondary,
                         borderWidth: 2,
-                        borderDash: [5, 3],
+                        borderDash: [6, 4],
                         pointRadius: 0,
                         fill: false,
                         tension: 0.3,
-                    }
-                ]
+                    },
+                ],
             },
             options: {
                 responsive: true,
@@ -244,36 +278,39 @@ async function renderLSTMChart() {
                     legend: { position: 'top' },
                     tooltip: {
                         callbacks: {
-                            label: ctx => ctx.dataset.label + ': ' + fmtPrice(ctx.parsed.y)
-                        }
-                    }
+                            label: (ctx) => ctx.dataset.label + ': ' + fmtPrice(ctx.parsed.y),
+                        },
+                    },
                 },
                 scales: {
                     x: {
-                        display: true,
+                        grid: { color: CHART_COLORS.grid },
                         ticks: { maxTicksLimit: 10, maxRotation: 0 },
-                        grid: { color: 'rgba(99,102,241,0.05)' }
                     },
                     y: {
-                        grid: { color: 'rgba(99,102,241,0.05)' },
-                        ticks: { callback: v => '$' + v.toLocaleString() }
-                    }
-                }
-            }
+                        grid: { color: CHART_COLORS.grid },
+                        ticks: {
+                            callback: (v) => '$' + Number(v).toLocaleString(),
+                        },
+                    },
+                },
+            },
         });
     } catch (e) {
         console.warn('renderLSTMChart error:', e);
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 5. LSTM TRAINING LOSS CHART
-// ══════════════════════════════════════════════════════════════════
 async function renderLSTMLoss() {
+    const lossHint = document.getElementById('lstmLossHint');
     try {
         const res = await fetch('/api/lstm-history');
         const data = await res.json();
-        if (!data.loss || data.loss.length === 0) return;
+        if (!data.loss || data.loss.length === 0) {
+            if (lossHint) lossHint.hidden = false;
+            return;
+        }
+        if (lossHint) lossHint.hidden = true;
 
         const epochs = data.loss.map((_, i) => 'Epoch ' + (i + 1));
         const ctx = document.getElementById('lstmLossChart').getContext('2d');
@@ -285,75 +322,80 @@ async function renderLSTMLoss() {
                 labels: epochs,
                 datasets: [
                     {
-                        label: 'Training Loss',
+                        label: 'Training loss',
                         data: data.loss,
-                        borderColor: '#6366f1',
+                        borderColor: CHART_COLORS.primary,
                         borderWidth: 2,
-                        pointRadius: 3,
+                        pointRadius: 2,
                         tension: 0.3,
                     },
                     {
-                        label: 'Validation Loss',
+                        label: 'Validation loss',
                         data: data.val_loss,
-                        borderColor: '#ef4444',
+                        borderColor: CHART_COLORS.danger,
                         borderWidth: 2,
-                        pointRadius: 3,
-                        borderDash: [5, 3],
+                        pointRadius: 2,
+                        borderDash: [6, 4],
                         tension: 0.3,
-                    }
-                ]
+                    },
+                ],
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: { legend: { position: 'top' } },
                 scales: {
-                    x: { grid: { color: 'rgba(99,102,241,0.05)' } },
-                    y: { grid: { color: 'rgba(99,102,241,0.05)' }, title: { display: true, text: 'MSE Loss' } }
-                }
-            }
+                    x: { grid: { color: CHART_COLORS.grid } },
+                    y: {
+                        grid: { color: CHART_COLORS.grid },
+                        title: { display: true, text: 'MSE', color: CHART_COLORS.text },
+                    },
+                },
+            },
         });
     } catch (e) {
         console.warn('renderLSTMLoss error:', e);
+        if (lossHint) lossHint.hidden = false;
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 6. ANOMALY CHART + TABLE
-// ══════════════════════════════════════════════════════════════════
 async function renderAnomalies() {
     try {
         const res = await fetch('/api/anomalies');
         const data = await res.json();
 
-        // Stats
-        document.getElementById('totalAnomalies').textContent = data.total_anomalies || '--';
-        if (data.total_records && data.total_anomalies) {
-            const rate = (data.total_anomalies / data.total_records * 100).toFixed(1);
-            document.getElementById('anomalyRate').textContent = rate + '%';
+        document.getElementById('totalAnomalies').textContent =
+            data.total_anomalies !== undefined ? data.total_anomalies : '--';
+        if (data.total_records && data.total_anomalies !== undefined) {
+            const rate = (data.total_anomalies / data.total_records) * 100;
+            document.getElementById('anomalyRate').textContent = rate.toFixed(1) + '%';
+        } else {
+            document.getElementById('anomalyRate').textContent = '--';
         }
 
-        // Chart
         if (data.all_scores && data.all_scores.length > 0) {
             const ctx = document.getElementById('anomalyChart').getContext('2d');
             if (anomalyChart) anomalyChart.destroy();
 
-            const colors = data.all_labels.map(l =>
-                l === -1 ? 'rgba(239,68,68,0.8)' : 'rgba(99,102,241,0.4)');
-            const radii = data.all_labels.map(l => l === -1 ? 5 : 2);
+            const colors = data.all_labels.map((l) =>
+                l === -1 ? 'rgba(220, 38, 38, 0.85)' : 'rgba(37, 99, 235, 0.35)'
+            );
+            const radii = data.all_labels.map((l) => (l === -1 ? 5 : 2));
 
             anomalyChart = new Chart(ctx, {
                 type: 'scatter',
                 data: {
-                    datasets: [{
-                        label: 'Anomaly Score',
-                        data: data.all_times.map((t, i) => ({
-                            x: i,
-                            y: data.all_scores[i]
-                        })),
-                        backgroundColor: colors,
-                        pointRadius: radii,
-                    }]
+                    datasets: [
+                        {
+                            label: 'Anomaly score',
+                            data: data.all_times.map((t, i) => ({
+                                x: i,
+                                y: data.all_scores[i],
+                            })),
+                            backgroundColor: colors,
+                            pointRadius: radii,
+                        },
+                    ],
                 },
                 options: {
                     responsive: true,
@@ -362,48 +404,58 @@ async function renderAnomalies() {
                         legend: { display: false },
                         tooltip: {
                             callbacks: {
-                                label: ctx => 'Score: ' + fmt(ctx.parsed.y, 4) +
-                                    (data.all_labels[ctx.dataIndex] === -1 ? ' ⚠️ ANOMALY' : ' ✅ Normal')
-                            }
-                        }
+                                label: (ctx) => {
+                                    const i = ctx.dataIndex;
+                                    const lbl =
+                                        data.all_labels[i] === -1 ? ' (anomaly)' : ' (normal)';
+                                    return 'Score: ' + fmt(ctx.parsed.y, 4) + lbl;
+                                },
+                            },
+                        },
                     },
                     scales: {
                         x: {
-                            title: { display: true, text: 'Time Index' },
-                            grid: { color: 'rgba(99,102,241,0.05)' }
+                            title: { display: true, text: 'Chỉ số thời gian (200 điểm gần nhất)', color: CHART_COLORS.text },
+                            grid: { color: CHART_COLORS.grid },
                         },
                         y: {
-                            title: { display: true, text: 'Anomaly Score (thấp = bất thường hơn)' },
-                            grid: { color: 'rgba(99,102,241,0.05)' }
-                        }
-                    }
-                }
+                            title: {
+                                display: true,
+                                text: 'Score (thấp hơn = bất thường hơn)',
+                                color: CHART_COLORS.text,
+                            },
+                            grid: { color: CHART_COLORS.grid },
+                        },
+                    },
+                },
             });
         }
 
-        // Table
         const tbody = document.getElementById('anomalyTableBody');
         if (data.anomalies && data.anomalies.length > 0) {
-            tbody.innerHTML = data.anomalies.slice(0, 15).map(a => `
+            tbody.innerHTML = data.anomalies
+                .slice(0, 15)
+                .map(
+                    (a) => `
                 <tr>
                     <td>${a.candle_time}</td>
                     <td>${fmtPrice(a.close)}</td>
                     <td>${fmt(a.volume, 4)}</td>
-                    <td style="color: ${Math.abs(a.price_change_pct) > 0.01 ? '#ef4444' : '#94a3b8'}">${fmt(a.price_change_pct * 100, 2)}%</td>
+                    <td class="${Math.abs(a.price_change_pct) > 0.01 ? 'cell-warn' : ''}">${fmt(a.price_change_pct * 100, 2)}%</td>
                     <td>${fmt(a.anomaly_score, 4)}</td>
                 </tr>
-            `).join('');
+            `
+                )
+                .join('');
         } else {
-            tbody.innerHTML = '<tr><td colspan="5" class="empty-row">Không tìm thấy anomaly</td></tr>';
+            tbody.innerHTML =
+                '<tr><td colspan="5" class="empty-row">Không có dòng được gắn anomaly (hoặc chưa đủ dữ liệu)</td></tr>';
         }
     } catch (e) {
         console.warn('renderAnomalies error:', e);
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 7. PRICE CHART WITH MA
-// ══════════════════════════════════════════════════════════════════
 async function renderPriceChart() {
     try {
         const res = await fetch('/api/price-history');
@@ -415,25 +467,25 @@ async function renderPriceChart() {
 
         const datasets = [
             {
-                label: 'Close Price',
+                label: 'Close',
                 data: data.prices,
-                borderColor: '#6366f1',
-                backgroundColor: 'rgba(99,102,241,0.08)',
+                borderColor: CHART_COLORS.primary,
+                backgroundColor: CHART_COLORS.primaryFill,
                 borderWidth: 2,
                 pointRadius: 0,
                 fill: true,
                 tension: 0.2,
-            }
+            },
         ];
 
         if (data.ma_7 && data.ma_7.length > 0) {
             datasets.push({
                 label: 'MA7',
                 data: data.ma_7,
-                borderColor: '#22c55e',
+                borderColor: CHART_COLORS.success,
                 borderWidth: 1.5,
                 pointRadius: 0,
-                borderDash: [4, 2],
+                borderDash: [4, 3],
                 tension: 0.3,
             });
         }
@@ -442,7 +494,7 @@ async function renderPriceChart() {
             datasets.push({
                 label: 'MA20',
                 data: data.ma_20,
-                borderColor: '#f59e0b',
+                borderColor: CHART_COLORS.secondary,
                 borderWidth: 1.5,
                 pointRadius: 0,
                 borderDash: [6, 3],
@@ -461,55 +513,98 @@ async function renderPriceChart() {
                     legend: { position: 'top' },
                     tooltip: {
                         callbacks: {
-                            label: ctx => ctx.dataset.label + ': ' + fmtPrice(ctx.parsed.y)
-                        }
-                    }
+                            label: (ctx) => ctx.dataset.label + ': ' + fmtPrice(ctx.parsed.y),
+                        },
+                    },
                 },
                 scales: {
                     x: {
                         ticks: { maxTicksLimit: 12, maxRotation: 0 },
-                        grid: { color: 'rgba(99,102,241,0.05)' }
+                        grid: { color: CHART_COLORS.grid },
                     },
                     y: {
-                        grid: { color: 'rgba(99,102,241,0.05)' },
-                        ticks: { callback: v => '$' + v.toLocaleString() }
-                    }
-                }
-            }
+                        grid: { color: CHART_COLORS.grid },
+                        ticks: {
+                            callback: (v) => '$' + Number(v).toLocaleString(),
+                        },
+                    },
+                },
+            },
         });
     } catch (e) {
         console.warn('renderPriceChart error:', e);
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 8. SSE REAL-TIME STREAM
-// ══════════════════════════════════════════════════════════════════
 function connectSSE() {
     const evtSource = new EventSource('/stream');
     evtSource.onmessage = function (event) {
         try {
             const data = JSON.parse(event.data);
             updatePredictionUI(data);
-            console.log('[SSE] Update received:', data.timestamp);
+            setModelHints(data);
         } catch (e) {
             console.warn('[SSE] Parse error:', e);
         }
     };
     evtSource.onerror = function () {
-        console.warn('[SSE] Connection lost, reconnecting in 5s...');
         evtSource.close();
         setTimeout(connectSSE, 5000);
     };
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 9. INIT
-// ══════════════════════════════════════════════════════════════════
-document.addEventListener('DOMContentLoaded', async () => {
-    console.log('🚀 Crypto ML Dashboard loading...');
+function initReportChrome() {
+    const tabs = document.querySelectorAll('.pb-tab');
+    const scrollEl = document.getElementById('pbMainScroll');
 
-    // Fetch tất cả data song song
+    tabs.forEach((tab) => {
+        tab.addEventListener('click', () => {
+            const sel = tab.getAttribute('data-target');
+            const target = sel ? document.querySelector(sel) : null;
+            if (target && scrollEl) {
+                scrollEl.scrollTo({
+                    top: target.offsetTop - 8,
+                    behavior: 'smooth',
+                });
+            } else if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+            tabs.forEach((t) => {
+                t.classList.toggle('is-active', t === tab);
+                t.setAttribute('aria-selected', t === tab ? 'true' : 'false');
+            });
+        });
+    });
+
+    document.getElementById('btnRefresh')?.addEventListener('click', async () => {
+        const btn = document.getElementById('btnRefresh');
+        if (btn) btn.disabled = true;
+        try {
+            await Promise.all([
+                fetchPredictions(),
+                fetchTrainingResults(),
+                renderFeatureImportance(),
+                renderLSTMChart(),
+                renderLSTMLoss(),
+                renderAnomalies(),
+                renderPriceChart(),
+            ]);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    });
+
+    const toggleBtn = document.getElementById('btnToggleFilters');
+    toggleBtn?.addEventListener('click', () => {
+        document.body.classList.toggle('filter-collapsed');
+        const collapsed = document.body.classList.contains('filter-collapsed');
+        toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    });
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+    initReportChrome();
+
     await Promise.all([
         fetchPredictions(),
         fetchTrainingResults(),
@@ -520,17 +615,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderPriceChart(),
     ]);
 
-    console.log('✅ Dashboard loaded');
-
-    // Kết nối real-time SSE
     connectSSE();
 
-    // Refresh charts mỗi 60 giây
+    const CHART_REFRESH_MS = 15 * 60 * 1000;
     setInterval(async () => {
-        await Promise.all([
-            renderLSTMChart(),
-            renderAnomalies(),
-            renderPriceChart(),
-        ]);
-    }, 60000);
+        await Promise.all([renderLSTMChart(), renderAnomalies(), renderPriceChart()]);
+    }, CHART_REFRESH_MS);
 });

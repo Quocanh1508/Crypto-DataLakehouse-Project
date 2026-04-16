@@ -16,8 +16,10 @@ lightgbm>=3.3.0
 tensorflow>=2.12.0
 
 # ── Web Server ──
-flask>=2.3.0
-flask-cors>=4.0.0
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+jinja2>=3.1.0
+python-multipart>=0.0.6
 
 # ── Visualization ──
 plotly>=5.15.0

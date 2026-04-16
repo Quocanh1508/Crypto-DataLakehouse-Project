@@ -20,8 +20,8 @@
 #       type: trino
 #       method: none        # no auth needed (local Trino without security)
 #       user: dbt_user      # REQUIRED - any non-empty string works
-#       host: localhost     # Trino exposes port 8080 from Docker
-#       port: 8080
+#       host: localhost     # Trino: docker-compose maps host 18080 → container 8080
+#       port: 18080
 #       database: delta     # catalog name from trino/catalog/delta.properties
 #       schema: default     # default schema in Delta catalog
 #       threads: 4          # max parallel model executions
